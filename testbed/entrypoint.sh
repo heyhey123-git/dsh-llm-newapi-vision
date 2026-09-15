@@ -169,6 +169,11 @@ dump_profile() {
 	log profile "装配断言通过：组合树包含 dsh-llm-newapi"
 }
 
+run_l2() {
+	log l2 "启动真实 dsh web 并执行探针"
+	bash /usr/local/bin/probes/boot-probe.sh || die "L2 探针失败，日志：/work/dsh-web.log"
+}
+
 main() {
 	if [ "${1:-}" = "--check-image" ]; then
 		check_image
@@ -181,6 +186,7 @@ main() {
 	want pack && pack_plugin
 	want profile && build_profile
 	want profile && dump_profile
+	want l2 && run_l2
 	log done "所选步骤完成：STEPS=${STEPS}"
 }
 
