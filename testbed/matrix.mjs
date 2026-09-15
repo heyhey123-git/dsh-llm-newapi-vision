@@ -13,8 +13,8 @@
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join, dirname, resolve, relative, basename, isAbsolute } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, dirname, resolve, relative, basename } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..')
@@ -46,8 +46,26 @@ const argOf = (name, fallback) => {
 	const i = argv.indexOf(name)
 	return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback
 }
-const combos = argOf('--combos', 'self').split(',').map((s) => s.trim()).filter(Boolean)
+// 逗号分隔参数统一在这里解析并**当场拒绝空集合**：`--combos ,`、`--versions ,` 或纯空白值
+// 会被 filter(Boolean) 清空，若放行就成了"0 格全绿、退出 0"的假绿（与 dist-tags 那条防线同类）。
+// 这类调用是命令行写错，不是"没有可测的组合"，所以直接退 1，绝不进入矩阵。
+const parseList = (flag, raw) => {
+	const list = raw.split(',').map((s) => s.trim()).filter(Boolean)
+	if (list.length === 0) {
+		console.error(`[matrix] ${flag} 解析后为空（收到：${JSON.stringify(raw)}）——拒绝以空集合运行矩阵（0 格全绿是假绿），请给出至少一个值，例如 --combos self`)
+		process.exit(1)
+	}
+	return list
+}
+const combos = parseList('--combos', argOf('--combos', 'self'))
+// --jobs 目前**只是保留参数**：矩阵仍是串行外循环（每格自带 build → 自检 → run 的前置，
+// 并行会打乱端口与镜像重建的时序）。为避免"设了 --jobs 其实是静默无效"的误判，非 1 的值
+// 直接报错；真要并行时再实现并删掉这条拒绝。
 const jobs = Number(argOf('--jobs', '1'))
+if (jobs !== 1) {
+	console.error(`[matrix] --jobs 当前仅为保留参数，矩阵仍是串行执行，只接受 --jobs 1（收到：${JSON.stringify(argOf('--jobs', '1'))}）`)
+	process.exit(1)
+}
 // 默认开启宿主零改动快照；`--no-check-host` 关掉它（用于只想看格结果的场合），
 // `--check-host` 是显式开（与 brief 的接口签名一致，即便默认已是开）。两者同给即报错，
 // 避免"以为关了其实开着"这类静默歧义。
@@ -59,8 +77,9 @@ const checkHost = !argv.includes('--no-check-host')
 
 // 版本解析：显式给出则原样使用（并打印来源）；否则解析 dist-tags 的 latest + next 去重。
 function resolveVersions() {
+	// 与 --combos 一致：显式给了 --versions（即便值是空串/逗号）就不去碰网络，空集合当场退 1。
 	const explicit = argOf('--versions', '')
-	if (explicit) return { source: `显式 --versions`, versions: explicit.split(',').map((s) => s.trim()).filter(Boolean) }
+	if (argv.includes('--versions')) return { source: `显式 --versions`, versions: parseList('--versions', explicit) }
 	// npm 的缓存目录必须显式指到可写处：本会话下 $HOME（/root）是只读文件系统，
 	// 默认的 /root/.npm 会让 npm view 以 EROFS 失败——而它失败时仍可能把 JSON 错误体写到
 	// stdout，静默解析成 {}（实测：解析出空版本集合 → 0 格"全绿"退出 0，典型的假绿）。
@@ -189,7 +208,9 @@ function buildImage(version, label, noCache) {
 
 // 运行 --source-hash 自检：只读、不需要 $DSH_HOME、不落任何产物。
 // 返回 { ok, status, stdout, stderr, files, stamp }：files 是"镜像内绝对路径 → sha256"，
-// stamp 是镜像里烧入的构建配方指纹（镜像没带指纹时为 null，与"指纹为空串"区分开）。
+// stamp 是镜像里烧入的构建配方指纹。注意 entrypoint.sh 的 source_hash **无条件**打印
+// `TESTBED_BUILD_STAMP=<值>`，缺失 /etc/testbed-build-stamp 时值是空串，所以"镜像没带指纹"
+// 在自检成功（status 0）时表现为 stamp === ''，而不是 null（只能用来判断空，不足以判断缺失）。
 function readImageHash(version, label) {
 	const r = compose(
 		['--file', composeFile, '--project-directory', here, 'run', '--rm', 'testbed', '--source-hash'],
@@ -231,13 +252,15 @@ const diffSources = (hostFiles, imageFiles) => {
 	return { same: lines.length === 0, lines }
 }
 
-// 指纹比对：缺失（镜像早于该机制 / 构建时没跑到那一步）视作陈旧，与"不一致"分行说明，
-// 便于区分"镜像没带指纹"和"指纹是另一个值"。host 侧算不出指纹（源码缺失）则跳过比对，
-// 此时逐文件核对仍然生效，只是不额外设障。
+// 指纹比对：宿主侧算不出指纹（源码缺失）则跳过比对，此时逐文件核对仍然生效，只是不额外设障。
+// 关于"缺失"与"不一致"：entrypoint.sh 的 source_hash 无条件打印 TESTBED_BUILD_STAMP=，
+// 镜像里文件缺失时打印的是**空串**，所以走不到 imageStamp === null 这条分支（该分支只在
+// --source-hash 本身失败时才有值可谈，而那时调用方已按自检失败提前 FAIL）。空串与不一致
+// 都会落到下面同一个判陈旧分支：两者都意味着"当前镜像不能证明它由当前 Dockerfile 构建"。
 function diffStamp(imageStamp) {
 	const host = hostBuildStamp()
 	if (host === null) return { same: true, line: '' }
-	if (imageStamp === null) return { same: false, line: '  镜像里没有构建配方指纹（TESTBED_BUILD_STAMP 缺失）：该镜像早于当前 Dockerfile，判为陈旧' }
+	if (imageStamp === null || imageStamp === '') return { same: false, line: `  镜像里没有可用的构建配方指纹（TESTBED_BUILD_STAMP ${imageStamp === null ? '缺失' : '为空串'}）：该镜像无法证明由当前 Dockerfile 构建，判为陈旧` }
 	if (imageStamp !== host) return { same: false, line: `  构建配方指纹不一致（只改 Dockerfile、没重建镜像时会这样）：\n    宿主 ${host}\n    镜像 ${imageStamp}` }
 	return { same: true, line: '' }
 }
@@ -349,10 +372,20 @@ function runGrid(version, combo, port, noCacheDone) {
 // 它们不触发任何副作用。矩阵本身只在被当作脚本直接运行时执行（见下面的守卫）。
 export { hostSources, hostDigest, hostBuildStamp, readImageHash, diffSources, diffStamp, hostSnapshot, BUILD_STAMP_ENV, BUILD_STAMP_SOURCES }
 
-// 只有被当作脚本直接运行时才跑矩阵；被 import（例如宿主侧复算指纹做核对）时只提供上面这些
-// 纯函数，绝不在 import 期间执行任何 docker 命令。
-if (process.env.__MATRIX_MAIN__ !== '0') {
+// 只有被当作脚本直接运行时（`node matrix.mjs`）才跑矩阵；被 import 时（例如宿主侧复算指纹、
+// 哈希做核对）只提供上面这些纯函数，绝不在 import 期间执行任何 docker 命令。
+// 判据是"直接执行"：入口脚本的真实路径与 import.meta.url 相等。不再用 `__MATRIX_MAIN__`
+// 那种默认执行、需要调用方主动设置环境变量才能避免副作用的写法——它默认执行，
+// `import('./matrix.mjs')` 会跑完整矩阵并在结尾 process.exit() 掉导入者（Task 8 实测踩过）。
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMain) {
 	const { source, versions } = resolveVersions()
+	// 兜底（--combos 已在解析处早退）：任何路径都不许带着空集合进入循环——0 格跑完只会打印
+	// "0/0 格通过；宿主零改动：是"并退出 0，那正是本脚本最该避免的假绿。
+	if (versions.length === 0 || combos.length === 0) {
+		console.error(`[matrix] 版本集合或组合集合为空（${versions.length} × ${combos.length}）——拒绝以 0 格运行矩阵（假绿），请显式给出 --versions/--combos`)
+		process.exit(1)
+	}
 	mkdirSync(outDir, { recursive: true })
 	console.log(`[matrix] 版本来源：${source}`)
 	console.log(`[matrix] 版本集合：${versions.join(', ')}`)
