@@ -29,12 +29,46 @@ check_image() {
 	log image "dsh $(dsh --version)"
 }
 
+assert_readonly() {
+	local m
+	for m in /host-dsh-home /plugin-src; do
+		[ -d "$m" ] || die "缺少只读挂载：$m"
+		if touch "$m/.testbed-write-probe" 2>/dev/null; then
+			rm -f "$m/.testbed-write-probe"
+			die "$m 可写——拒绝运行（会污染宿主）。请确认 compose 使用 :ro 挂载"
+		fi
+	done
+	log assert "宿主挂载确认为只读"
+}
+
+# 只复制配置类文件；会话/浏览器/账本数据一律不进容器。
+seed_home() {
+	rm -rf "$STATE"
+	mkdir -p "$STATE"
+	local f d
+	for f in settings.yaml .credentials.yaml pet.json; do
+		[ -e "/host-dsh-home/$f" ] && cp -a "/host-dsh-home/$f" "$STATE/$f"
+	done
+	for d in skills storages; do
+		[ -d "/host-dsh-home/$d" ] && cp -a "/host-dsh-home/$d" "$STATE/$d"
+	done
+	if [ -e "$STATE/.credentials.yaml" ]; then
+		# credentials-local 拒绝 owner 之外可读的文件（默认 umask 给 644），
+		# 权限过宽会让整棵插件树加载失败——CI 的 boot job 里记着这个坑。
+		chmod 600 "$STATE/.credentials.yaml"
+		log seed "凭据已播种（mode 600）"
+	fi
+	log seed "DSH_HOME 就绪：$STATE"
+}
+
 main() {
 	if [ "${1:-}" = "--check-image" ]; then
 		check_image
 		return 0
 	fi
-	die "entrypoint 尚未实现完整流程（见后续任务）"
+	want assert && assert_readonly
+	want seed && seed_home
+	log done "所选步骤完成：STEPS=${STEPS}"
 }
 
 main "$@"
