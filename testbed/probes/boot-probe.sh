@@ -37,8 +37,9 @@ expect() {
 	printf '%s' "$v"
 }
 
-# expect_required <node 表达式> <出错说明>：**只能在函数体内、或在 `… || die` 保护下使用**，
-# 因为它用 die 直报终端（这正是要修复的行为）。取值缺失即中止本函数（由调用点决定是否 die）。
+# expect_required <node 表达式> <出错说明>：取值失败（缺字段或为空）时报错到 **stderr** 并返回
+# 非零——用 fail 而不是 die，因此可以安全地放在 `$( )` 里；错误文案必定在终端可见。
+# 语义与 expect 相同，区别只在"为空"时多打一条带业务说明的错；两个入参都必填。
 expect_required() {
 	local v
 	v="$(expect "$1")" || return 1
@@ -158,16 +159,27 @@ if [ -n "${COMPANION:-}" ]; then
 		const missing = required.filter((b) => !E.clientBundles.includes(b))
 		if (missing.length) throw new Error("契约不完整：clientBundles 未覆盖 " + missing.join("、") + "（实际 " + JSON.stringify(E.clientBundles) + "）")
 	' || die "契约不完整：clientBundles 未同时覆盖 ${self_name}/client.js 与 ${companion_contract}/client.js（契约 $EXPECT）"
-	bundle_count="$(expect_required 'E.clientBundles.length')" || exit 1
-	[ "$bundle_count" -ge 1 ] || die "契约不完整：clientBundles 为空（$EXPECT）"
+	bundle_expected="$(expect_required 'E.clientBundles.length' "组合契约缺少 clientBundles：$EXPECT")" || exit 1
+	[ "$bundle_expected" -ge 1 ] || die "契约不完整：clientBundles 为空（$EXPECT）"
 
-	while IFS= read -r bundle; do
+	# 逐项断言并**当场计数**：bundle_asserted 只在这里自增，绝不回读契约长度——
+	# 否则"覆盖 N 项"会变成对契约的复述，而不是对实际断言次数的陈述（又一种假绿）。
+	bundle_asserted=0
+	# `|| [ -n "$bundle" ]` 不能省：expect 用 printf '%s' 输出、**没有尾换行**，
+	# bash 的 read 在"读到字节但遇 EOF"时会赋值却返回非零，漏掉最后一项（实测：
+	# 2 项输入旧写法只跑 1 轮，而对端恰好是最后一项）。带这个兜底才会处理末行。
+	while IFS= read -r bundle || [ -n "$bundle" ]; do
 		[ -n "$bundle" ] || continue
 		grep -q "$bundle" /work/index.html \
 			|| die "组合格缺少客户端 bundle 引用：$bundle（未出现在 /work/index.html；契约 $EXPECT，self=${self_name} companion=${companion_contract}）"
+		bundle_asserted=$((bundle_asserted + 1))
+		say "客户端 bundle 命中：${bundle}"
 	done < <(expect 'E.clientBundles.join("\n")')
-	# 文案按**实际消费的条目**生成：循环跑了 N 次就报 N 条，不再硬说"两个"。
-	say "组合格：客户端 bundle 断言覆盖 ${bundle_count} 项且全部命中（${self_name}/client.js + ${companion_contract}/client.js，契约驱动）"
+
+	# 断言次数必须与契约声明的条数一致，否则报出来的"覆盖 N 项"就是假的。
+	[ "$bundle_asserted" = "$bundle_expected" ] \
+		|| die "契约声明 ${bundle_expected} 项客户端 bundle，实际只断言了 ${bundle_asserted} 项（契约 $EXPECT）"
+	say "组合格：客户端 bundle 断言覆盖 ${bundle_asserted} 项且全部命中（${self_name}/client.js + ${companion_contract}/client.js，契约驱动）"
 
 	# 两条通道都按契约发一次；契约的 rpcProbes[0] 是自身、[1] 是对端，
 	# 任一条被另一条覆盖都会在 rpc_assert 的 rpcId 回显检查上红。
