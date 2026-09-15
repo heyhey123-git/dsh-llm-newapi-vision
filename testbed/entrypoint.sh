@@ -8,6 +8,7 @@ GRID_LABEL="${GRID_LABEL:-local}"
 PROFILE_MODE="${PROFILE_MODE:-minimal}"
 COMPANION="${COMPANION:-}"
 STEPS="${STEPS:-all}"
+TARBALL=""
 
 STATE=/work/dsh-home
 PREFIX="[testbed][${DSH_VERSION}][${GRID_LABEL}]"
@@ -101,6 +102,60 @@ run_l1() {
 	log l1 "全部通过"
 }
 
+pack_plugin() {
+	cd /work/plugin
+	rm -rf /work/dist
+	mkdir -p /work/dist
+	npm pack --pack-destination /work/dist >/dev/null
+	TARBALL="$(ls /work/dist/*.tgz | head -1)"
+	[ -n "$TARBALL" ] || die "npm pack 未产出 tarball"
+	log pack "已打包：$(basename "$TARBALL")"
+	export TARBALL
+}
+
+# bundles 行决定 dsh 启动时装载哪些 bundle 层。CI 里这一步是手工补写的，
+# 这里同样显式写入并打印，避免"装了但没注册"的假绿。
+register_bundle_rows() {
+	node -e '
+		const fs = require("node:fs")
+		const path = process.argv[1]
+		const rows = process.argv.slice(2)
+		const pkg = JSON.parse(fs.readFileSync(path, "utf8"))
+		pkg.dsh ??= {}
+		pkg.dsh.profile ??= {}
+		pkg.dsh.profile.bundles ??= ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+		for (const row of rows) if (!pkg.dsh.profile.bundles.includes(row)) pkg.dsh.profile.bundles.push(row)
+		fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n")
+		console.log("bundles: " + pkg.dsh.profile.bundles.join(", "))
+	' "$STATE/profiles/web/package.json" dsh-llm-newapi
+}
+
+build_profile() {
+	case "$PROFILE_MODE" in
+		minimal)
+			log profile "PROFILE_MODE=minimal：空 profile + 安装本仓库 tarball"
+			dsh plugin --profile web add "$TARBALL"
+			;;
+		preserve)
+			die "PROFILE_MODE=preserve 尚未实现（见 Task 5）"
+			;;
+		*)
+			die "未知 PROFILE_MODE：$PROFILE_MODE"
+			;;
+	esac
+	[ -f "$STATE/profiles/web/package.json" ] || die "dsh plugin add 未生成 $STATE/profiles/web/package.json"
+	register_bundle_rows
+}
+
+# 装配断言：组合树里必须出现本插件行。
+dump_profile() {
+	dsh --profile web --dump-config > /work/dump-config.txt 2>&1 \
+		|| die "dsh --dump-config 失败，见 /work/dump-config.txt"
+	grep -q "dsh-llm-newapi" /work/dump-config.txt \
+		|| die "组合树中没有 dsh-llm-newapi 行（patch 层未生效）"
+	log profile "装配断言通过：组合树包含 dsh-llm-newapi"
+}
+
 main() {
 	if [ "${1:-}" = "--check-image" ]; then
 		check_image
@@ -110,6 +165,9 @@ main() {
 	want seed && seed_home
 	want stage && stage_sources
 	want l1 && run_l1
+	want pack && pack_plugin
+	want profile && build_profile
+	want profile && dump_profile
 	log done "所选步骤完成：STEPS=${STEPS}"
 }
 
