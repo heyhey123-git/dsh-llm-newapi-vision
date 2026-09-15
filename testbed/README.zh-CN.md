@@ -39,6 +39,12 @@ docker compose build
 `testbed/.gitignore` 忽略 `.env`、`.out/` 与 `.docker-config/` 的内容（`!` 例外保留
 `.docker-config/.gitkeep`，该占位文件随仓库提供）；`cp` 出来的 `.env` 与运行产物都不会入库。
 
+`.env` 是**容器与矩阵共同的唯一来源**：`docker compose` 从它插值宿主挂载（`DSH_HOME_HOST`）与
+`NPM_REGISTRY` build arg；`matrix.mjs` 用 `process.loadEnvFile` 读**同一份**文件——已存在的环境
+变量优先（与 compose 的优先级一致），`.env` 只补缺。每次运行都会打印实际生效的快照目标，例如
+`[matrix] 宿主快照目标：/root/.dsh（来源：…）`，因此 `宿主零改动：是` 绝不会报在一个容器从未
+挂载过的目录上。
+
 ## 常用命令
 
 以下命令都在 `testbed/` 目录内执行。
@@ -106,19 +112,20 @@ export DOCKER_CONFIG="$PWD/.docker-config"   # 在 testbed/ 目录内执行
 
 ## 基础镜像获取
 
-`Dockerfile` 的 `FROM` 始终是官方的 `node:24-bookworm-slim`。若 daemon 的 registry mirror
-不可用、`docker.io` 直连超时，可先预取再按原名打本地标签：
+`Dockerfile` 的 `FROM` 始终是官方的 `node:24-bookworm-slim`，且**未 pin digest**（见下）。
+若 daemon 的 registry mirror 不可用、`docker.io` 直连超时，可先预取再按原名打本地标签：
 
 ```sh
 docker pull docker.m.daocloud.io/library/node:24-bookworm-slim
 docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-slim
 ```
 
-**不要把第三方镜像站写进 `FROM`**；预取时请把 registry 下发的 digest 记进本文档以便日后核对。
-本环境实测到的基础镜像 digest 为
+**不要把第三方镜像站写进 `FROM`**。注意本仓库的 `FROM` **未 pin digest**：`node:24-bookworm-slim`
+是滚动 tag，重建时可能拉到该 tag 当前指向的新基础镜像。本环境在预取时实测到的 digest 为
 `sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`
-（`node:24-bookworm-slim`，见构建日志的 `FROM docker.io/library/node:24-bookworm-slim@sha256:…` 行；
-该值会随时间变化，核对时请以官方 registry 当前下发的 digest 为准）。
+（`node:24-bookworm-slim`，见构建日志的 `FROM docker.io/library/node:24-bookworm-slim@sha256:…` 行），
+此处仅作记录，它会随上游镜像更新而变。若需要可复现的基础镜像，请自行 pin
+（`FROM node:24-bookworm-slim@sha256:<digest>`）。
 
 ## 宿主零改动如何验证
 
@@ -148,7 +155,7 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
 | 构建产物新鲜度判红 | 在宿主执行 `npm run build` 并提交重建的 `lib/`（等价于 CI 的 committed artifacts are current） |
 | 首次构建很慢 | 要拉取 `node:24-bookworm-slim`；后续构建命中层缓存 |
 | 某个包下载异常 / 依赖 registry 缓存 | 命名卷 `dsh-testbed-llm-newapi_npm-cache`、`dsh-testbed-llm-newapi_pnpm-store` 是包缓存，怀疑缓存损坏时可 `docker volume rm` 后重跑（代价是重新下载） |
-| 单格 FAIL | 先看 `testbed/.out/<版本>-<组合>.log` 的尾部；`[freshness]` 或"镜像陈旧"字样说明镜像没跟上源码，按下一节处理 |
+| 单格 FAIL | 先看 `testbed/.out/<版本>-<组合>.log` 的尾部；`[freshness]` 或"镜像陈旧"字样说明镜像没跟上源码，见**《已知限制与注意事项》第 4 条**（镜像新鲜度陷阱） |
 
 ## 已知限制与注意事项
 
@@ -157,7 +164,8 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
 宿主 profile 的 3 条第三方 bundle 行 `superpowers-dsh`、`dsh-quota-panel`、
 `@creait/dsh-tailnet-gateway` **全部还原成功、0 条警告**，`bundles:` 行包含全部行
 （`@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app, superpowers-dsh, dsh-quota-panel,
-@creait/dsh-tailnet-gateway, dsh-llm-newapi`），装配断言通过，**退出码 0，跑两遍结果一致**；
+@creait/dsh-tailnet-gateway, dsh-llm-newapi`），装配断言通过，**退出码 0，跑两遍结果一致**
+（两遍均为 `STEPS=assert,seed,stage,l1,pack,profile`，即**未跑 L2**）；
 同期的 `minimal` 回归也全绿。因此 spec 里"npm/pnpm 布局混用"这一唯一待收敛风险**不成立**
 （宿主 profile 本就由 pnpm 管理，容器内 `dsh plugin add` 转发的是同一套 pnpm）。
 默认仍建议 `minimal`（更快、更少外部依赖、不受 registry 可用性影响）；需要复现宿主完整
@@ -165,9 +173,11 @@ bundle 组合时用 `preserve`——但请连同下面第 1、3 条限制一起�
 
 1. **`preserve` 不还原版本约束（版本漂移）**：`preserve` 只按**行名**还原宿主 profile 的
    bundle 行。宿主里 `dsh-quota-panel@0.9.2-rc.3` 在容器内解析到的是 registry 的 `latest`
-   稳定 dist-tag（该包 `latest=0.9.1`，装出来是 `^0.9.1`），**不是**宿主 pin 的 `next`
-   预发布。这**不是"降级"**（`^0.9.1` 本来就允许 0.9.2）；准确含义是：`preserve` 复现的是
-   "装了哪些 bundle 行"，而不是"装了哪些确切版本"。需要逐版本一致必须另做（本环境未做）。
+   **稳定版**（`^0.9.1`，实际装出来是 **0.9.1**——见
+   `testbed/.out/logs/task5-step3-preserve.log`），而宿主 pin 的是 `next` 预发布 `0.9.2-rc.3`。
+   `^0.9.1` **不含 prerelease**，因此**相对宿主这是一次降级**（0.9.2-rc.3 → 0.9.1）。结论不变：
+   `preserve` 复现的是"装了哪些 bundle 行"，而不是"装了哪些确切版本"。需要逐版本一致必须另做
+   （本环境未做）。
 2. **`preserve` 只从行名出发，且依赖宿主 profile 存在**：缺
    `/host-dsh-home/profiles/web/package.json` 会直接 `die`；`minimal` 无此前提。
 3. **`preserve` 的退出码语义**：还原第三方行失败只**警告**、不中断流程，因此

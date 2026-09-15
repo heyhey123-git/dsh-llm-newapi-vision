@@ -44,6 +44,13 @@ docker compose build
 exception that keeps `.docker-config/.gitkeep`, the placeholder tracked in this repository), so
 neither the `.env` you copy nor any run output is ever committed.
 
+`.env` is the **single source for both sides**: `docker compose` interpolates the host mount
+(`DSH_HOME_HOST`) and the `NPM_REGISTRY` build arg from it, and `matrix.mjs` loads the same file via
+`process.loadEnvFile` — an already-set environment variable wins, exactly as in compose, and `.env`
+only fills the gaps. Every matrix run prints the snapshot target actually in use, e.g.
+`[matrix] 宿主快照目标：/root/.dsh（来源：…）`, so `宿主零改动：是` ("host untouched: yes") is never
+reported for a directory the container never mounted.
+
 ## Common commands
 
 Run all of these from inside `testbed/`.
@@ -113,21 +120,23 @@ automatically.
 
 ## Base image
 
-The `Dockerfile` `FROM` is always the official `node:24-bookworm-slim`. If the daemon's registry
-mirror is unavailable or direct `docker.io` access times out, prefetch and tag it locally under
-the original name:
+The `Dockerfile` `FROM` is always the official `node:24-bookworm-slim`, and it is **not** pinned by
+digest (see below). If the daemon's registry mirror is unavailable or direct `docker.io` access
+times out, prefetch and tag it locally under the original name:
 
 ```sh
 docker pull docker.m.daocloud.io/library/node:24-bookworm-slim
 docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-slim
 ```
 
-**Never** put a third-party mirror into `FROM`; record the digest the registry reports at prefetch
-time in this document so it can be verified later. This environment measured the base image digest
-as `sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`
+**Never** put a third-party mirror into `FROM`. Note that this `FROM` does **not** pin a digest:
+`node:24-bookworm-slim` is a rolling tag, so a rebuild can pick up whatever the tag currently points
+at. This environment observed the digest
+`sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`
 (`node:24-bookworm-slim`, from the build log's
-`FROM docker.io/library/node:24-bookworm-slim@sha256:…` line). That value changes over time — when
-verifying, take the digest the official registry currently serves.
+`FROM docker.io/library/node:24-bookworm-slim@sha256:…` line) at prefetch time; it is recorded for
+reference only and moves as the upstream image is updated. If you need a reproducible base image,
+pin it yourself (`FROM node:24-bookworm-slim@sha256:<digest>`).
 
 ## How host-untouched is verified
 
@@ -162,7 +171,7 @@ configuration, not that they never touched a single host byte.
 | Artifact freshness check reports red | Run `npm run build` on the host and commit the rebuilt `lib/` (equivalent to CI's "committed artifacts are current") |
 | First build is slow | It pulls `node:24-bookworm-slim`; later builds hit the layer cache |
 | A package download misbehaves or registry state looks stale | The named volumes `dsh-testbed-llm-newapi_npm-cache` and `dsh-testbed-llm-newapi_pnpm-store` hold package caches; if you suspect cache corruption, `docker volume rm` them and rerun (the cost is re-downloading) |
-| A grid reports FAIL | Read the tail of `testbed/.out/<version>-<combo>.log` first; `[freshness]` or the wording `镜像陈旧` ("stale image", the literal string the script prints) means the image did not follow the sources — see the next section |
+| A grid reports FAIL | Read the tail of `testbed/.out/<version>-<combo>.log` first; `[freshness]` or the wording `镜像陈旧` ("stale image", the literal string the script prints) means the image did not follow the sources — see **Known limitations and caveats**, item 4 (image-freshness trap) |
 
 ## Known limitations and caveats
 
@@ -172,20 +181,24 @@ In one full run (`PROFILE_MODE=preserve DSH_VERSION=0.1.5-rc.1`, on an npm-layou
 `@creait/dsh-tailnet-gateway` — were **restored successfully with 0 warnings**, the `bundles:` line
 listed every row (`@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app, superpowers-dsh, dsh-quota-panel,
 @creait/dsh-tailnet-gateway, dsh-llm-newapi`), the assembly assertion passed, and the run exited **0
-with two runs giving identical results**; the `minimal` regression run around it was green too. The
-spec's only open risk — "npm/pnpm layout mixing" — therefore **does not materialise** (the host
-profile is already pnpm-managed and `dsh plugin add` inside the container forwards the same pnpm).
+with two runs giving identical results** (both runs used
+`STEPS=assert,seed,stage,l1,pack,profile`, i.e. **L2 was not run**); the `minimal` regression run
+around it was green too. The spec's only open risk — "npm/pnpm layout mixing" — therefore **does not
+materialise** (the host profile is already pnpm-managed and `dsh plugin add` inside the container
+forwards the same pnpm).
 `minimal` is still the recommended default (faster, fewer external dependencies, unaffected by
 registry availability); use `preserve` when you need the host's full bundle composition reproduced —
 but read it together with limitations 1 and 3 below.
 
 1. **`preserve` does not restore version constraints (version drift).** `preserve` restores the
    host profile's bundle rows **by row name only**. A host row like `dsh-quota-panel@0.9.2-rc.3`
-   resolves inside the container to the registry's **`latest` stable dist-tag** (that package's
-   `latest` is 0.9.1, so `^0.9.1` gets installed) — **not** the `next` prerelease the host pinned.
-   This is **not a downgrade** (`^0.9.1` already permits 0.9.2). The accurate meaning: `preserve`
-   reproduces *which bundle rows are installed*, not *which exact versions*. Exact-version parity
-   would need separate work and is not implemented here.
+   resolves inside the container to the registry's **`latest` stable version** (`^0.9.1`, so **0.9.1**
+   is what actually gets installed — confirmed in
+   `testbed/.out/logs/task5-step3-preserve.log`), while the host pins the `next` prerelease
+   `0.9.2-rc.3`. `^0.9.1` does **not** include prereleases, so **relative to the host this is a
+   downgrade** (0.9.2-rc.3 → 0.9.1). The conclusion is unchanged: `preserve` reproduces *which
+   bundle rows are installed*, not *which exact versions*. Exact-version parity would need separate
+   work and is not implemented here.
 2. **`preserve` starts from row names and needs the host profile.** If
    `/host-dsh-home/profiles/web/package.json` is missing it exits immediately (`die`);
    `minimal` has no such prerequisite.

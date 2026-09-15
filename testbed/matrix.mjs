@@ -92,8 +92,41 @@ function resolveVersions() {
 	return { source: `dist-tags（latest=${tags.latest}, next=${tags.next}）`, versions }
 }
 
+// ── testbed/.env：必须与 compose 读同一份 ────────────────────────────────────
+// compose 的插值会自己读 testbed/ 下的 .env（挂载写成 `${DSH_HOME_HOST:-/root/.dsh}`），而 Node 不会。
+// 矩阵若不读同一份文件，用户按 README 把 DSH_HOME_HOST 写进 .env 后就会出现假绿：容器挂载确实
+// 换到了新路径，宿主快照却仍在看 /root/.dsh，末行照样打印"宿主零改动：是"——那是在一个根本没
+// 挂进容器的目录上得出的结论。NPM_REGISTRY 同根因（compose.yaml 把它作为 build arg 插值）。
+// 用 Node 内建 process.loadEnvFile：**已存在的环境变量优先、只补缺**（与 compose 的优先级一致）。
+// 文件不存在是正常情况（静默跳过）；但"文件存在却读不进来"不能静默——那时 compose 仍会用它插值
+// 宿主挂载，而我们的快照目标只能退回默认值，正好又是上面那种假绿，所以主流程里对它硬报错。
+// 本步骤本身绝不 process.exit —— import 时同样要零退出、零报错。
+const envFilePath = join(here, '.env')
+const hostTargetFromEnvVar = process.env.DSH_HOME_HOST // 必须在 loadEnvFile 之前记录，才能报出真实来源
+const envFileExists = existsSync(envFilePath)
+const envFileError = (() => {
+	try {
+		process.loadEnvFile(envFilePath)
+		return null
+	} catch (error) {
+		return error
+	}
+})()
+const envFileLoaded = envFileError === null && envFileExists
+const envFileNote = envFileLoaded
+	? '；已读 testbed/.env'
+	: envFileExists
+		? `；testbed/.env 读取失败：${envFileError && envFileError.message}`
+		: '；未发现 testbed/.env（可 cp .env.example .env）'
+
 // 宿主白名单快照：只看配置类文件，排除会持续变化的 sessions/storages/browser-*/change-ledger。
+// 快照目标与容器挂载同源（都来自环境变量/.env），否则"宿主零改动"会报在一个没人挂载的目录上。
 const HOST_TARGET = process.env.DSH_HOME_HOST || '/root/.dsh'
+const HOST_TARGET_SOURCE = hostTargetFromEnvVar !== undefined
+	? '环境变量 DSH_HOME_HOST（优先于 .env）'
+	: process.env.DSH_HOME_HOST !== undefined ? 'testbed/.env' : '默认值（环境变量与 .env 都未设置）'
+// 镜像构建期的 npm registry 也只由同一份 .env / 环境变量决定（compose.yaml 的 NPM_REGISTRY build arg）。
+const NPM_REGISTRY_EFFECTIVE = process.env.NPM_REGISTRY || 'https://registry.npmjs.org（默认值）'
 function hostSnapshot() {
 	const entries = []
 	const walk = (rel) => {
@@ -395,6 +428,12 @@ if (isMain) {
 		process.exit(1)
 	}
 	const checkHost = !argv.includes('--no-check-host')
+	// .env 存在却读不进来：compose 仍会读它（宿主挂载会换到别的目录），而快照目标只能退回默认值，
+	// 结论就会是错的"宿主零改动：是"。这种不一致必须硬报错，绝不带着它继续跑。
+	if (envFileExists && !envFileLoaded) {
+		console.error(`[matrix] testbed/.env 存在但无法读取（${envFileError && envFileError.message}）——compose 仍会用它插值宿主挂载，而宿主快照只能退回默认值，会得出错误的"宿主零改动：是"。请修正或删除 .env 后重跑`)
+		process.exit(1)
+	}
 
 	const { source, versions } = resolveVersions()
 	// 兜底（--combos 已在解析处早退）：任何路径都不许带着空集合进入循环——0 格跑完只会打印
@@ -408,6 +447,9 @@ if (isMain) {
 	console.log(`[matrix] 版本集合：${versions.join(', ')}`)
 	console.log(`[matrix] 组合：${combos.join(', ')}`)
 	console.log(`[matrix] 镜像新鲜度核对：每格前置（build → --source-hash → 逐文件哈希 + 构建配方指纹；不一致则 --no-cache 重建）`)
+	// 把"生效值 + 来源"印出来：只印"宿主零改动：是"而不说快照的是哪个目录，正是上面 C1 那类假绿的温床。
+	console.log(`[matrix] 宿主快照目标：${HOST_TARGET}（来源：${HOST_TARGET_SOURCE}${envFileNote}）`)
+	console.log(`[matrix] 镜像构建 registry：${NPM_REGISTRY_EFFECTIVE}${envFileLoaded ? '（.env 已并入）' : ''}`)
 
 	const before = checkHost ? hostSnapshot() : ''
 	const results = []
