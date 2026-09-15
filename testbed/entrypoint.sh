@@ -72,6 +72,20 @@ stage_sources() {
 		-cf - . | tar -C /work/plugin -xf -
 	[ -f /work/plugin/package.json ] || die "源码暂存失败：/work/plugin/package.json 不存在"
 	log stage "源码已暂存：/work/plugin"
+	if [ -n "$COMPANION" ]; then
+		[ -f /companion-src/package.json ] || die "COMPANION=$COMPANION 但 /companion-src 不是插件源码（检查 COMPANION_HOST_DIR）"
+		[ -f /companion-src/node_modules/.bin/tsc ] \
+			|| die "COMPANION=$COMPANION 但没有 node_modules（对端的 prepack 会构建，需要本地 devDependencies）——先在 $COMPANION 里 npm install"
+		rm -rf /work/companion
+		mkdir -p /work/companion
+		# 对端不带 committed 产物约定：它的 prepack 就是 `npm run build`，因此 node_modules
+		# 是打包的硬依赖（缺它 npm pack 直接失败）。本仓库刻意排除 node_modules 是因为它自己
+		# 的 L1 会 `npm ci` 重建；对端没有 L1，所以这里必须带上（142MB 左右，只是本地拷贝）。
+		tar -C /companion-src \
+			--exclude=./.git --exclude='./.tmp-*' \
+			-cf - . | tar -C /work/companion -xf -
+		log stage "对端源码已暂存：/work/companion（$COMPANION）"
+	fi
 }
 
 lib_digest() {
@@ -113,8 +127,22 @@ pack_plugin() {
 	export TARBALL
 }
 
+# 对端（COMPANION）的 npm pack。对端仓库的 prepack 会自己构建，因此这里不跑它的 L1。
+pack_companion() {
+	[ -n "$COMPANION" ] || return 0
+	cd /work/companion
+	log pack "打包对端：$COMPANION"
+	npm pack --pack-destination /work/dist >/dev/null
+	COMPANION_TARBALL="$(ls -t /work/dist/*.tgz | head -1)"
+	[ -n "$COMPANION_TARBALL" ] || die "对端 npm pack 未产出 tarball"
+	log pack "已打包对端：$(basename "$COMPANION_TARBALL")"
+	export COMPANION_TARBALL
+}
+
 # bundles 行决定 dsh 启动时装载哪些 bundle 层。CI 里这一步是手工补写的，
 # 这里同样显式写入并打印，避免"装了但没注册"的假绿。
+# 包名由调用点给出（`register_bundle_rows dsh-llm-newapi`）——`dsh plugin add` 的
+# reconcile 只把"本次新增的依赖"计入 bundles，对端包在安装时已是依赖，必须显式补行。
 register_bundle_rows() {
 	node -e '
 		const fs = require("node:fs")
@@ -127,7 +155,7 @@ register_bundle_rows() {
 		for (const row of rows) if (!pkg.dsh.profile.bundles.includes(row)) pkg.dsh.profile.bundles.push(row)
 		fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n")
 		console.log("bundles: " + pkg.dsh.profile.bundles.join(", "))
-	' "$STATE/profiles/web/package.json" dsh-llm-newapi
+	' "$STATE/profiles/web/package.json" "$@"
 }
 
 build_profile() {
@@ -156,8 +184,14 @@ build_profile() {
 			die "未知 PROFILE_MODE：$PROFILE_MODE"
 			;;
 	esac
+	if [ -n "$COMPANION" ]; then
+		[ -n "${COMPANION_TARBALL:-}" ] || die "COMPANION=$COMPANION 但缺少对端 tarball——profile 步必须在 pack 步之后（或用 STEPS=all）"
+		log profile "安装对端：$COMPANION"
+		dsh plugin --profile web add "$COMPANION_TARBALL"
+		register_bundle_rows "$COMPANION"
+	fi
 	[ -f "$STATE/profiles/web/package.json" ] || die "dsh plugin add 未生成 $STATE/profiles/web/package.json"
-	register_bundle_rows
+	register_bundle_rows dsh-llm-newapi
 }
 
 # 装配断言：组合树里必须出现本插件行。
@@ -184,6 +218,7 @@ main() {
 	want stage && stage_sources
 	want l1 && run_l1
 	want pack && pack_plugin
+	want pack && pack_companion
 	want profile && build_profile
 	want profile && dump_profile
 	want l2 && run_l2

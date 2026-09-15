@@ -53,7 +53,32 @@ node -e '
 ' "$BODY" || die "RPC 响应校验失败"
 say "RPC 通道应答正确（HTTP 200 + unknown-endpoint 语义）"
 
-# 4) 日志卫生：两次真实事故的形态
+# 4) 组合格：两个客户端 bundle 必须同时进入 boot 图，两个 RPC 通道都必须应答。
+if [ -n "${COMPANION:-}" ]; then
+	grep -q "dsh-llm-newapi/client.js" /work/index.html || die "组合格缺少 dsh-llm-newapi 客户端 bundle"
+	grep -q "${COMPANION}/client.js" /work/index.html || die "组合格缺少 ${COMPANION} 客户端 bundle"
+	say "组合格：两个客户端 bundle 均在 boot 图中"
+
+	c1="$(curl -s -b "$COOKIE" -o /work/c1.json -w '%{http_code}' -X POST \
+		"http://127.0.0.1:${PORT}/llm-newapi/ci-probe" -H 'content-type: application/json' \
+		-d '{"type":"client-request","rpcId":"combo-self","method":"ci-probe","payload":{}}' || true)"
+	[ "$c1" = "200" ] || die "组合格：/llm-newapi 通道非 200（HTTP $c1）"
+
+	c2="$(curl -s -b "$COOKIE" -o /work/c2.json -w '%{http_code}' -X POST \
+		"http://127.0.0.1:${PORT}/api/dsh-quota-panel/specs" -H 'content-type: application/json' \
+		-d '{"type":"client-request","rpcId":"combo-peer","method":"dsh-quota-panel/specs","payload":{}}' || true)"
+	[ "$c2" = "200" ] || die "组合格：/api/dsh-quota-panel 通道非 200（HTTP $c2；405 = SPA 回退，说明对端路由未注册）"
+	node -e '
+		const fs = require("node:fs")
+		const self = JSON.parse(fs.readFileSync("/work/c1.json", "utf8"))
+		const peer = JSON.parse(fs.readFileSync("/work/c2.json", "utf8"))
+		if (self.rpcId !== "combo-self") throw new Error("自身通道返回了别的响应：" + JSON.stringify(self))
+		if (peer.rpcId !== "combo-peer") throw new Error("对端通道返回了别的响应：" + JSON.stringify(peer))
+	' || die "组合格：通道响应串扰"
+	say "组合格：两个 RPC 通道各自应答，无覆盖"
+fi
+
+# 5) 日志卫生：两次真实事故的形态
 if grep -qE 'plugin tree failed to load|without inject' "$LOG"; then
 	die "日志出现插件加载失败特征"
 fi

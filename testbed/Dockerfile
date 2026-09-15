@@ -1,4 +1,7 @@
-# syntax=docker/dockerfile:1
+# 刻意不写 `# syntax=docker/dockerfile:1`：本文件只用标准 Dockerfile 语法，而该行会让
+# 每次 --build 都去 registry 解析一次 frontend 镜像（docker-image://docker/dockerfile:1）。
+# 在本机（registry mirror 不可用）实测该解析每次固定 60.4s 超时才回落到内建 frontend，
+# 是纯浪费。删掉后构建语义完全不变；若将来真的需要 BuildKit 新语法，再按需加回这一行。
 # testbed 镜像：node 24（与 CI 一致）+ pnpm（dsh plugin 转发 pnpm）+ 指定版本的 dsh。
 # NPM_REGISTRY 可覆盖：若 @deepseek-ai/* 命中 registry 的 stale-packument（EINTEGRITY），
 # 按 CI 的经验改用镜像源，例如 https://registry.npmmirror.com。
