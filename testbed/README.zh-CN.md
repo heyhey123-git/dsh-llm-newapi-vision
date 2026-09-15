@@ -4,7 +4,9 @@
 支持多宿主版本与插件共存组合。
 
 - 宿主 `$DSH_HOME` 与仓库源码都以 `:ro` **只读**挂载，容器内写入只落在容器可写层与命名卷。
-- 每次运行前会自检两个挂载点确实不可写，可写即拒绝运行。
+- 每次运行前会自检这两个挂载点确实不可写（`/host-dsh-home` 与 `/plugin-src`），可写即拒绝运行。
+  该自检受 `STEPS` 门控：`STEPS=l2` 会跳过它；对端挂载 `/companion-src` 不在自检范围内
+  （它同样由 compose 以 `:ro` 挂载，见下一节与"宿主零改动如何验证"）。
 - 默认宿主端口 13080（宿主 3080 是 GUI，本环境永不占用）。
 
 测试内容概览：
@@ -34,7 +36,8 @@ cp .env.example .env   # 按需修改 DSH_HOME_HOST / HOST_PORT / NPM_REGISTRY
 docker compose build
 ```
 
-`.env` 与 `.out/`、`.docker-config/` 都已被 `testbed/.gitignore` 忽略，不会入库。
+`testbed/.gitignore` 忽略 `.env`、`.out/` 与 `.docker-config/` 的内容（`!` 例外保留
+`.docker-config/.gitkeep`，该占位文件随仓库提供）；`cp` 出来的 `.env` 与运行产物都不会入库。
 
 ## 常用命令
 
@@ -54,7 +57,7 @@ COMPANION=dsh-quota-panel COMPANION_HOST_DIR=../../dsh-quota-panel \
 # 4) 全矩阵（默认 latest + next 去重 × self）
 node matrix.mjs
 
-# 5) preserve：先还原宿主 profile 的 bundle 行，再安装本仓库 tarball
+# 5) preserve：先按行名还原宿主 profile 的 bundle 行，再安装本仓库 tarball 覆盖发行版行
 PROFILE_MODE=preserve DSH_VERSION=0.1.5-rc.1 docker compose run --rm --build testbed
 
 # 6) 分步调试（`STEPS=all` 是默认值）
@@ -66,7 +69,7 @@ STEPS=assert,seed,stage,l1,pack,profile,l2 docker compose run --rm --build testb
 | 参数 | 含义 |
 | --- | --- |
 | `--versions v1,v2` | 显式给出宿主版本；缺省读 registry 的 `latest` + `next` 去重 |
-| `--combos self,pair` | 组合集合，缺省 `self` |
+| `--combos self,self+companion` | 组合集合，缺省 `self`。**只有字面量 `self+companion` 被特判**：它会自动设 `COMPANION=dsh-quota-panel`，并使用兄弟目录 `../dsh-quota-panel`（从 `testbed/` 出发即 `../../dsh-quota-panel`）。其他名字会被原样接受但**不设对端**，于是退化成重复的 self 格并照样 PASS——不要用未实现的名字（如 `pair`） |
 | `--check-host` / `--no-check-host` | 宿主零改动快照，默认开启；两者同给即报错 |
 | `--jobs 1` | 目前仅为保留参数，矩阵仍是串行；非 1 会直接报错 |
 
@@ -76,7 +79,7 @@ STEPS=assert,seed,stage,l1,pack,profile,l2 docker compose run --rm --build testb
 每格的原始日志写到 `testbed/.out/<版本>-<组合>.log`，汇总表写到 `testbed/.out/summary.md`
 （整个 `.out/` 已 gitignore）。
 
-### 三个对应关系（照抄时最容易写错的地方）
+### 四个对应关系（照抄时最容易写错的地方）
 
 - `DSH_VERSION` / `PROFILE_MODE` / `COMPANION` / `GRID_LABEL` / `STEPS` 是 **compose 环境变量**，
   要写在 `docker compose run` **前面**；只有 `docker compose run` 之后、service 名之后的参数
@@ -85,6 +88,10 @@ STEPS=assert,seed,stage,l1,pack,profile,l2 docker compose run --rm --build testb
   `../../<对端目录名>`。对端目录需要已有 `node_modules`（对端的 `prepack` 就是构建，
   缺 devDependencies 会在 `npm pack` 阶段 fail-fast）。
 - `COMPANION` 必须与对端 tarball 内 `package.json` 的 `name` 严格一致，否则直接报错。
+- 走 `matrix.mjs --combos self,self+companion` 时，对端是**自动**选定的兄弟目录
+  `../dsh-quota-panel`（即从 `testbed/` 看是 `../../dsh-quota-panel`），不用（也无法）手工传
+  `COMPANION`；`--combos` 只认这一个字面量名，见下面的参数表与"已知限制"开头的 `preserve`
+  实测结论。
 
 ## 宿主侧准备
 
@@ -107,15 +114,20 @@ docker pull docker.m.daocloud.io/library/node:24-bookworm-slim
 docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-slim
 ```
 
-**不要把第三方镜像站写进 `FROM`**；预取时请记录 registry 下发的 digest 以便日后核对。
+**不要把第三方镜像站写进 `FROM`**；预取时请把 registry 下发的 digest 记进本文档以便日后核对。
+本环境实测到的基础镜像 digest 为
+`sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`
+（`node:24-bookworm-slim`，见构建日志的 `FROM docker.io/library/node:24-bookworm-slim@sha256:…` 行；
+该值会随时间变化，核对时请以官方 registry 当前下发的 digest 为准）。
 
 ## 宿主零改动如何验证
 
-1. **运行前只读断言**：每次 `docker compose run` 会断言 `/host-dsh-home` 与 `/plugin-src`
-   只读，可写即拒绝运行（`assert` 步）。
+1. **运行前只读断言**：`STEPS` 含 `assert`（默认的 `STEPS=all` 即含）时，会断言
+   `/host-dsh-home` 与 `/plugin-src` 只读，可写即拒绝运行（`assert` 步）。显式跳过 `assert`
+   （例如 `STEPS=l2`）就没有这层自检；对端挂载 `/companion-src` 不在断言范围内。
 2. **运行前后白名单快照**：`matrix.mjs` 对宿主配置做前后快照 —— `settings.yaml`、
    `.credentials.yaml`、`pet.json`、`skills/`、`profiles/`（`profiles/node_modules` 除外）——
-   任何变化即判红，末行会打印 `宿主零改动：否`。会持续变化的会话/浏览器目录不在白名单内。
+   任何变化即判红，末行会打印 `宿主零改动：是/否`。会持续变化的会话/浏览器目录不在白名单内。
 3. **手工复核**：
 
    ```sh
@@ -140,6 +152,17 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
 
 ## 已知限制与注意事项
 
+**`preserve` 实测结论（先看这条结论，再看下面逐条限制）：`preserve` 可用。**
+在一次完整实测中（`PROFILE_MODE=preserve DSH_VERSION=0.1.5-rc.1`，npm 布局的宿主 profile），
+宿主 profile 的 3 条第三方 bundle 行 `superpowers-dsh`、`dsh-quota-panel`、
+`@creait/dsh-tailnet-gateway` **全部还原成功、0 条警告**，`bundles:` 行包含全部行
+（`@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app, superpowers-dsh, dsh-quota-panel,
+@creait/dsh-tailnet-gateway, dsh-llm-newapi`），装配断言通过，**退出码 0，跑两遍结果一致**；
+同期的 `minimal` 回归也全绿。因此 spec 里"npm/pnpm 布局混用"这一唯一待收敛风险**不成立**
+（宿主 profile 本就由 pnpm 管理，容器内 `dsh plugin add` 转发的是同一套 pnpm）。
+默认仍建议 `minimal`（更快、更少外部依赖、不受 registry 可用性影响）；需要复现宿主完整
+bundle 组合时用 `preserve`——但请连同下面第 1、3 条限制一起读。
+
 1. **`preserve` 不还原版本约束（版本漂移）**：`preserve` 只按**行名**还原宿主 profile 的
    bundle 行。宿主里 `dsh-quota-panel@0.9.2-rc.3` 在容器内解析到的是 registry 的 `latest`
    稳定 dist-tag（该包 `latest=0.9.1`，装出来是 `^0.9.1`），**不是**宿主 pin 的 `next`
@@ -149,8 +172,9 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
    `/host-dsh-home/profiles/web/package.json` 会直接 `die`；`minimal` 无此前提。
 3. **`preserve` 的退出码语义**：还原第三方行失败只**警告**、不中断流程，因此
    **"退出码 0"并不等于"完整复现了宿主组合"**。判读要看两点：`bundles:` 行（列出了实际注册
-   的 bundle 层）与日志里有没有 `警告：还原 <行名> 失败`。`preserve` 也会带出 pnpm 的
-   peer dependency 警告，属正常噪声，不影响装配断言。
+   的 bundle 层）与日志里有没有 `警告：还原 <行名> 失败`。pnpm 的 peer dependency 警告
+   （`[WARN] Issues with peer dependencies found`）**两类格都会出现**（`minimal` 格与
+   `preserve` 格都实测到过），属正常噪声，不影响装配断言。
 4. **镜像新鲜度陷阱（曾造成假绿）**：`docker compose run --build` 在 `COPY probes` 层判定为
    缓存命中时会**静默复用陈旧镜像**（实测过：镜像内探针 137 行 vs 宿主 191 行，整格假绿）。
    因此 `matrix.mjs` 每格开跑前都做两件事：① 运行 `--source-hash`，把镜像内
@@ -165,13 +189,14 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
    两个关键词在全部历史日志中 **0 命中**。该断言排在 L2 最后，插件树加载失败通常会先被
    boot 图断言捕获；但"它自己能否判红"未经实测，属未覆盖项，**不是缺陷**。
 7. **`die()` 会把日志尾部（含一次性 token）打到 stdout**：探针失败时会 `tail -40`
-   容器内 `dsh web` 日志，其中含一次性登录 token；这些内容会落在宿主侧
-   `testbed/.out/logs/`（已 gitignore）。**分享日志前请先脱敏**，例如
+   容器内 `dsh web` 日志，其中含一次性登录 token；这些内容会落在该格的日志文件
+   `testbed/.out/<版本>-<组合>.log`（由 `matrix.mjs` 落盘，`.out/` 已 gitignore）。
+   **分享日志前请先脱敏**，例如
    `sed -E 's/([?&]token=)[^ &]+/\1[REDACTED]/g'`。
 8. **基础镜像来源**：`Dockerfile` 的 `FROM` 始终是官方 `node:24-bookworm-slim`。在
    `docker.io` 直连超时、daemon mirror 不可用的环境里，镜像是从可信镜像站预取后**在本地按
    原名打标签**的（见"基础镜像获取"）。这是环境侧的取巧，不是文件内容；若要求严格来自
-   `docker.io` 官方，需要先修好网络/镜像源。
+   `docker.io` 官方，需要先修好网络/镜像源。本环境实测记录的基础镜像 digest 见"基础镜像获取"。
 9. **这不是安全沙箱**：容器会执行本仓库与对端插件源码，且能读到只读挂载进来的**真实凭据**
    （整份 `$DSH_HOME` 以只读方式挂进来）。它解决的是"环境污染与版本矩阵"，**不是**
    "不可信代码隔离"——请只在你愿意在容器里运行这些代码的机器上跑。

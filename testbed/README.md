@@ -5,7 +5,10 @@ environment; supports multiple host versions and plugin coexistence combinations
 
 - Both the host `$DSH_HOME` and the repository sources are mounted **read-only** (`:ro`);
   writes inside the container only land in the container's writable layer and named volumes.
-- Every run first asserts that both mounts are in fact not writable and refuses to run otherwise.
+- Every run first asserts that both mounts (`/host-dsh-home` and `/plugin-src`) are in fact not
+  writable and refuses to run otherwise. That assertion is gated by `STEPS` (so `STEPS=l2` skips
+  it), and the companion mount `/companion-src` is not covered by it (it is still mounted `:ro`
+  by compose — see the next section and "How host-untouched is verified").
 - Default host port is 13080 (the host's 3080 is the GUI; this environment never takes it).
 
 What is checked:
@@ -37,7 +40,9 @@ cp .env.example .env   # adjust DSH_HOME_HOST / HOST_PORT / NPM_REGISTRY as need
 docker compose build
 ```
 
-`.env`, `.out/` and `.docker-config/` are all ignored by `testbed/.gitignore` and never committed.
+`testbed/.gitignore` ignores `.env`, `.out/` and the contents of `.docker-config/` (with a `!`
+exception that keeps `.docker-config/.gitkeep`, the placeholder tracked in this repository), so
+neither the `.env` you copy nor any run output is ever committed.
 
 ## Common commands
 
@@ -57,7 +62,7 @@ COMPANION=dsh-quota-panel COMPANION_HOST_DIR=../../dsh-quota-panel \
 # 4) Full matrix (default: latest + next, deduplicated, × self)
 node matrix.mjs
 
-# 5) preserve: restore the host profile's bundle rows first, then install this repo's tarball
+# 5) preserve: restore the host profile's bundle rows by name first, then install this repo's tarball
 PROFILE_MODE=preserve DSH_VERSION=0.1.5-rc.1 docker compose run --rm --build testbed
 
 # 6) Step-by-step debugging (`STEPS=all` is the default)
@@ -69,7 +74,7 @@ STEPS=assert,seed,stage,l1,pack,profile,l2 docker compose run --rm --build testb
 | Parameter | Meaning |
 | --- | --- |
 | `--versions v1,v2` | Explicit host versions; otherwise registry `latest` + `next`, deduplicated |
-| `--combos self,pair` | Combo set, default `self` |
+| `--combos self,self+companion` | Combo set, default `self`. **Only the literal `self+companion` is special-cased**: it sets `COMPANION=dsh-quota-panel` automatically and uses the sibling directory `../dsh-quota-panel` (`../../dsh-quota-panel` as seen from `testbed/`). Any other name is accepted verbatim but leaves the companion unset, so it degenerates into a duplicate `self` grid that still prints PASS — do not use unimplemented names such as `pair` |
 | `--check-host` / `--no-check-host` | Host-untouched snapshot, on by default; passing both is an error |
 | `--jobs 1` | Reserved parameter only: the matrix is still serial, and any value other than 1 errors out |
 
@@ -79,7 +84,7 @@ would be a false green) instead of degrading into "0/0 grids passed".
 Each grid's raw log goes to `testbed/.out/<version>-<combo>.log`, and the summary table to
 `testbed/.out/summary.md` (the whole `.out/` directory is gitignored).
 
-### Three things people get wrong when copying commands
+### Four things people get wrong when copying commands
 
 - `DSH_VERSION` / `PROFILE_MODE` / `COMPANION` / `GRID_LABEL` / `STEPS` are **compose environment
   variables** and belong *before* `docker compose run`. Only arguments placed after the service
@@ -88,6 +93,11 @@ Each grid's raw log goes to `testbed/.out/<version>-<combo>.log`, and the summar
   sits next to this one, write `../../<companion-dir>`. The companion directory must already have
   `node_modules` (its `prepack` *is* the build, so missing devDependencies fail fast at `npm pack`).
 - `COMPANION` must match the companion tarball's `package.json` `name` exactly, or the run errors out.
+- With `matrix.mjs --combos self,self+companion` the companion is chosen **automatically** as the
+  sibling directory `../dsh-quota-panel` (that is `../../dsh-quota-panel` as seen from `testbed/`),
+  and you neither need nor can pass `COMPANION` by hand. `--combos` recognises that one literal
+  name only — see the parameter table above and the measured `preserve` result opening "Known
+  limitations".
 
 ## Host-side preparation
 
@@ -113,13 +123,18 @@ docker tag  docker.m.daocloud.io/library/node:24-bookworm-slim node:24-bookworm-
 ```
 
 **Never** put a third-party mirror into `FROM`; record the digest the registry reports at prefetch
-time so it can be verified later.
+time in this document so it can be verified later. This environment measured the base image digest
+as `sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`
+(`node:24-bookworm-slim`, from the build log's
+`FROM docker.io/library/node:24-bookworm-slim@sha256:…` line). That value changes over time — when
+verifying, take the digest the official registry currently serves.
 
 ## How host-untouched is verified
 
-1. **Read-only assertion before every run**: each `docker compose run` asserts that
-   `/host-dsh-home` and `/plugin-src` are read-only and refuses to run if either is writable
-   (the `assert` step).
+1. **Read-only assertion before the run**: when `STEPS` includes `assert` (the default `STEPS=all`
+   does), the run asserts that `/host-dsh-home` and `/plugin-src` are read-only and refuses to run
+   if either is writable (the `assert` step). Skipping `assert` explicitly (for example `STEPS=l2`)
+   skips that self-check, and the companion mount `/companion-src` is not covered by it.
 2. **Whitelist snapshot around the run**: `matrix.mjs` snapshots the host config before and after —
    `settings.yaml`, `.credentials.yaml`, `pet.json`, `skills/`, `profiles/` (excluding
    `profiles/node_modules`) — and reports red on any change; the last line prints
@@ -147,9 +162,22 @@ configuration, not that they never touched a single host byte.
 | Artifact freshness check reports red | Run `npm run build` on the host and commit the rebuilt `lib/` (equivalent to CI's "committed artifacts are current") |
 | First build is slow | It pulls `node:24-bookworm-slim`; later builds hit the layer cache |
 | A package download misbehaves or registry state looks stale | The named volumes `dsh-testbed-llm-newapi_npm-cache` and `dsh-testbed-llm-newapi_pnpm-store` hold package caches; if you suspect cache corruption, `docker volume rm` them and rerun (the cost is re-downloading) |
-| A grid reports FAIL | Read the tail of `testbed/.out/<version>-<combo>.log` first; `[freshness]` or "stale image" wording means the image did not follow the sources — see the next section |
+| A grid reports FAIL | Read the tail of `testbed/.out/<version>-<combo>.log` first; `[freshness]` or the wording `镜像陈旧` ("stale image", the literal string the script prints) means the image did not follow the sources — see the next section |
 
 ## Known limitations and caveats
+
+**Measured `preserve` result (read this conclusion before the numbered items): `preserve` works.**
+In one full run (`PROFILE_MODE=preserve DSH_VERSION=0.1.5-rc.1`, on an npm-layout host profile) all
+3 third-party bundle rows of the host profile — `superpowers-dsh`, `dsh-quota-panel`,
+`@creait/dsh-tailnet-gateway` — were **restored successfully with 0 warnings**, the `bundles:` line
+listed every row (`@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app, superpowers-dsh, dsh-quota-panel,
+@creait/dsh-tailnet-gateway, dsh-llm-newapi`), the assembly assertion passed, and the run exited **0
+with two runs giving identical results**; the `minimal` regression run around it was green too. The
+spec's only open risk — "npm/pnpm layout mixing" — therefore **does not materialise** (the host
+profile is already pnpm-managed and `dsh plugin add` inside the container forwards the same pnpm).
+`minimal` is still the recommended default (faster, fewer external dependencies, unaffected by
+registry availability); use `preserve` when you need the host's full bundle composition reproduced —
+but read it together with limitations 1 and 3 below.
 
 1. **`preserve` does not restore version constraints (version drift).** `preserve` restores the
    host profile's bundle rows **by row name only**. A host row like `dsh-quota-panel@0.9.2-rc.3`
@@ -164,9 +192,10 @@ configuration, not that they never touched a single host byte.
 3. **`preserve` exit-code semantics.** A failed third-party row restore only produces a
    **warning** and does not abort the run. So **exit code 0 does not mean "the host composition
    was fully reproduced"**. Read two things instead: the `bundles:` line (the bundle layers
-   actually registered) and whether the log contains `警告：还原 <row> 失败`. `preserve` also
-   surfaces pnpm peer-dependency warnings; those are normal noise and do not affect the assembly
-   assertion.
+   actually registered) and whether the log contains `警告：还原 <row> 失败`. pnpm peer-dependency
+   warnings (`[WARN] Issues with peer dependencies found`) **occur in both kinds of grid** (observed
+   in `minimal` grids as well as `preserve` grids); they are normal noise and do not affect the
+   assembly assertion.
 4. **Image-freshness trap (it once produced a false green).** When `docker compose run --build`
    decides the `COPY probes` layer is a cache hit, it **silently reuses a stale image** (observed:
    probe 137 lines in the image vs 191 on the host, with the whole grid green). `matrix.mjs`
@@ -186,15 +215,16 @@ configuration, not that they never touched a single host byte.
    by the boot-graph assertion; whether it can go red on its own is untested. This is an
    **uncovered item, not a defect**.
 7. **`die()` prints the log tail (including a one-time token).** On probe failure it tails the
-   container's `dsh web` log, which contains a one-time login token, so those lines land under the
-   host-side `testbed/.out/logs/` (gitignored). **Redact before sharing logs**, e.g.
+   container's `dsh web` log, which contains a one-time login token, so those lines land in that
+   grid's log file `testbed/.out/<version>-<combo>.log` (written by `matrix.mjs`; `.out/` is
+   gitignored). **Redact before sharing logs**, e.g.
    `sed -E 's/([?&]token=)[^ &]+/\1[REDACTED]/g'`.
 8. **Base image provenance.** The `Dockerfile` `FROM` is always the official
    `node:24-bookworm-slim`. In an environment where direct `docker.io` access times out and the
    daemon's mirror is unavailable, the image is prefetched from a trusted mirror and then **tagged
    locally under the original name** (see "Base image"). That is an environment-side workaround,
    not file content; requiring strict official-`docker.io` provenance means fixing the network or
-   the mirror first.
+   the mirror first. The digest this environment measured is recorded in "Base image".
 9. **This is not a security sandbox.** The container executes this repository's and the
    companion's source code, and can read the **real credentials** mounted read-only into it (the
    entire `$DSH_HOME` is mounted). It addresses environment pollution and version matrices, **not**
