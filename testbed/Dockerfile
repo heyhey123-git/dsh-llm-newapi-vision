@@ -25,4 +25,7 @@ WORKDIR /work
 COPY entrypoint.sh /usr/local/bin/testbed-entrypoint
 RUN chmod +x /usr/local/bin/testbed-entrypoint
 
+# 探针脚本：preserve 模式据此还原宿主 profile 的 bundle 行（见 entrypoint.sh）。
+COPY probes /usr/local/bin/probes
+
 ENTRYPOINT ["/usr/local/bin/testbed-entrypoint"]

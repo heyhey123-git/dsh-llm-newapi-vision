@@ -137,7 +137,20 @@ build_profile() {
 			dsh plugin --profile web add "$TARBALL"
 			;;
 		preserve)
-			die "PROFILE_MODE=preserve 尚未实现（见 Task 5）"
+			log profile "PROFILE_MODE=preserve：先还原宿主 profile 的 bundle 行"
+			local host_manifest=/host-dsh-home/profiles/web/package.json
+			[ -f "$host_manifest" ] || die "preserve 需要宿主 profile：$host_manifest 不存在"
+			local rows
+			rows="$(node /usr/local/bin/probes/preserve-seed.mjs "$host_manifest" || true)"
+			if [ -n "$rows" ]; then
+				while IFS= read -r row; do
+					[ -n "$row" ] || continue
+					log profile "还原第三方行：$row"
+					dsh plugin --profile web add "$row" || log profile "警告：还原 $row 失败（依赖网络或上游包）"
+				done <<< "$rows"
+			fi
+			log profile "安装本仓库 tarball（覆盖发行版行）"
+			dsh plugin --profile web add "$TARBALL"
 			;;
 		*)
 			die "未知 PROFILE_MODE：$PROFILE_MODE"
