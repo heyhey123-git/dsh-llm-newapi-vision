@@ -7,10 +7,26 @@ PORT="${PORT:-3080}"
 LOG="${LOG:-/work/dsh-web.log}"
 COOKIE="${COOKIE:-/work/cookies.txt}"
 BODY=/work/probe-body.txt
+# 组合契约的唯一真源（同一份也供人阅读）：插件名、客户端 bundle 名、RPC 路径与期望结果。
+# 组合格的断言全部从这里读，脚本里不再保留第二份硬编码副本——对端改名时会先红在
+# "契约不一致"，而不是含糊地红在"路由未注册"。
+EXPECT="${EXPECT:-/usr/local/bin/probes/expectations.companion.json}"
+export EXPECT
 TAG="[testbed][${DSH_VERSION}][${GRID_LABEL}][l2]"
 
 say() { printf '%s %s\n' "$TAG" "$1"; }
 die() { printf '%s [fail] %s\n' "$TAG" "$1"; [ -f "$LOG" ] && tail -40 "$LOG"; exit 1; }
+
+# expect <node 表达式> <出错说明>：直查契约 JSON，不落中间变量。
+# 表达式里用 E 指代已解析的契约，例如 `E.companion`、`E.rpcProbes[1].method`。
+expect() {
+	node -e '
+		const fs = require("node:fs")
+		const E = JSON.parse(fs.readFileSync(process.env.EXPECT, "utf8"))
+		const v = eval(process.argv[1])
+		process.stdout.write(v === undefined || v === null ? "" : String(v))
+	' "$1" || die "读取组合契约失败（$EXPECT）：$2"
+}
 
 rm -f "$COOKIE"
 dsh web > "$LOG" 2>&1 &
@@ -55,27 +71,55 @@ say "RPC 通道应答正确（HTTP 200 + unknown-endpoint 语义）"
 
 # 4) 组合格：两个客户端 bundle 必须同时进入 boot 图，两个 RPC 通道都必须应答。
 if [ -n "${COMPANION:-}" ]; then
-	grep -q "dsh-llm-newapi/client.js" /work/index.html || die "组合格缺少 dsh-llm-newapi 客户端 bundle"
-	grep -q "${COMPANION}/client.js" /work/index.html || die "组合格缺少 ${COMPANION} 客户端 bundle"
-	say "组合格：两个客户端 bundle 均在 boot 图中"
+	# 先做契约一致性自检：环境里的 COMPANION 与契约 JSON 对不上时立刻报出来，
+	# 而不是等到后面以"路由未注册"的形式间接暴露。
+	companion_contract="$(expect 'E.companion' '缺少 companion 字段')"
+	self_contract="$(expect 'E.self' '缺少 self 字段')"
+	[ -n "$companion_contract" ] || die "组合契约缺少 companion 字段：$EXPECT"
+	[ "$companion_contract" = "$COMPANION" ] \
+		|| die "契约不一致：COMPANION=$COMPANION 但 $EXPECT 的 companion=$companion_contract"
 
-	c1="$(curl -s -b "$COOKIE" -o /work/c1.json -w '%{http_code}' -X POST \
-		"http://127.0.0.1:${PORT}/llm-newapi/ci-probe" -H 'content-type: application/json' \
-		-d '{"type":"client-request","rpcId":"combo-self","method":"ci-probe","payload":{}}' || true)"
-	[ "$c1" = "200" ] || die "组合格：/llm-newapi 通道非 200（HTTP $c1）"
+	for bundle in $(expect 'E.clientBundles.join(" ")' 'clientBundles 不是非空数组'); do
+		grep -q "$bundle" /work/index.html \
+			|| die "组合格缺少客户端 bundle 引用：$bundle（未出现在 /work/index.html；契约 $EXPECT，self=${self_contract:-?} companion=${companion_contract:-?}）"
+	done
+	say "组合格：两个客户端 bundle 均在 boot 图中（契约驱动：${self_contract} + ${companion_contract}）"
 
-	c2="$(curl -s -b "$COOKIE" -o /work/c2.json -w '%{http_code}' -X POST \
-		"http://127.0.0.1:${PORT}/api/dsh-quota-panel/specs" -H 'content-type: application/json' \
-		-d '{"type":"client-request","rpcId":"combo-peer","method":"dsh-quota-panel/specs","payload":{}}' || true)"
-	[ "$c2" = "200" ] || die "组合格：/api/dsh-quota-panel 通道非 200（HTTP $c2；405 = SPA 回退，说明对端路由未注册）"
+	# 两个 RPC 通道：路径、方法、rpcId 与期望语义全部来自契约；分别记录 HTTP 码与响应体。
+	rpc_codes=()
+	rpc_bodies=()
+	for i in 0 1; do
+		path="$(expect "E.rpcProbes[$i].path" "rpcProbes[$i].path 缺失")"
+		method="$(expect "E.rpcProbes[$i].method" "rpcProbes[$i].method 缺失")"
+		rpc_id="$(expect "E.rpcProbes[$i].rpcId" "rpcProbes[$i].rpcId 缺失")"
+		code="$(curl -s -b "$COOKIE" -o "/work/rpc-$i.json" -w '%{http_code}' -X POST \
+			"http://127.0.0.1:${PORT}${path}" -H 'content-type: application/json' \
+			-d "{\"type\":\"client-request\",\"rpcId\":\"$rpc_id\",\"method\":\"$method\",\"payload\":{}}" || true)"
+		[ "$code" = "200" ] \
+			|| die "组合格：${path} 非 200（HTTP $code；405 = SPA 回退，说明该通道路由未注册，检查契约 $EXPECT）"
+		rpc_codes+=("$code")
+		rpc_bodies+=("/work/rpc-$i.json")
+	done
+
 	node -e '
 		const fs = require("node:fs")
-		const self = JSON.parse(fs.readFileSync("/work/c1.json", "utf8"))
-		const peer = JSON.parse(fs.readFileSync("/work/c2.json", "utf8"))
-		if (self.rpcId !== "combo-self") throw new Error("自身通道返回了别的响应：" + JSON.stringify(self))
-		if (peer.rpcId !== "combo-peer") throw new Error("对端通道返回了别的响应：" + JSON.stringify(peer))
-	' || die "组合格：通道响应串扰"
-	say "组合格：两个 RPC 通道各自应答，无覆盖"
+		const E = JSON.parse(fs.readFileSync(process.env.EXPECT, "utf8"))
+		const bodies = process.argv.slice(1).map((p) => JSON.parse(fs.readFileSync(p, "utf8")))
+		if (bodies.length !== E.rpcProbes.length) throw new Error(`契约声明 ${E.rpcProbes.length} 条通道，实际收到 ${bodies.length} 条响应`)
+		bodies.forEach((body, i) => {
+			const p = E.rpcProbes[i]
+			if (body.rpcId !== p.rpcId) throw new Error(`${p.path} 返回了别的响应（串扰）：期望 rpcId=${p.rpcId}，实际 ${JSON.stringify(body)}`)
+			const ok = body.result?.ok
+			if (ok !== p.expectOk) throw new Error(`${p.path} 业务语义不符：期望 result.ok=${p.expectOk}，实际 ${JSON.stringify(body)}`)
+			const needle = p.expectErrorIncludes
+			if (needle) {
+				const message = String(body.result?.error?.message ?? "")
+				if (!message.includes(needle)) throw new Error(`${p.path} 错误语义不符：期望 message 含 ${JSON.stringify(needle)}，实际 ${JSON.stringify(message)}`)
+			}
+		})
+		console.log("通道校验通过：" + bodies.map((b, i) => `${E.rpcProbes[i].path} ok=${b.result?.ok}`).join("；"))
+	' "${rpc_bodies[@]}" || die "组合格：通道响应不符合契约（串扰或业务语义）"
+	say "组合格：两个 RPC 通道各自应答，无覆盖（HTTP ${rpc_codes[0]}/${rpc_codes[1]}，语义与 $EXPECT 一致）"
 fi
 
 # 5) 日志卫生：两次真实事故的形态

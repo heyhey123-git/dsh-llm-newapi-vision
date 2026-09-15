@@ -128,15 +128,43 @@ pack_plugin() {
 }
 
 # 对端（COMPANION）的 npm pack。对端仓库的 prepack 会自己构建，因此这里不跑它的 L1。
+# 打包结果用 `--json` 取，而不是 `ls -t | head -1`：后者只看 mtime，一旦选错文件，
+# bundles 行会写成一个并不存在的包名——症状是后面对端 bundle 缺席的假红。
+# 注意 `--json` 的报告会被 prepack 的 stdout（tsc / 构建脚本的 console.log）污染，
+# 所以按"第一个 [ 到最后一个 ]" 取 JSON 区间，而不是整文件 JSON.parse。
+# 再从 tarball 里读出真实包名作为 bundles 行名；与 COMPANION 不一致时直接 die，
+# 避免把"契约名"与"实际包名"的差异拖到探针阶段才以别的形态暴露。
 pack_companion() {
 	[ -n "$COMPANION" ] || return 0
 	cd /work/companion
 	log pack "打包对端：$COMPANION"
-	npm pack --pack-destination /work/dist >/dev/null
-	COMPANION_TARBALL="$(ls -t /work/dist/*.tgz | head -1)"
-	[ -n "$COMPANION_TARBALL" ] || die "对端 npm pack 未产出 tarball"
-	log pack "已打包对端：$(basename "$COMPANION_TARBALL")"
-	export COMPANION_TARBALL
+	local report=/work/npm-pack-companion.json
+	npm pack --pack-destination /work/dist --json > "$report" 2>/dev/null
+	COMPANION_TARBALL="$(node -e '
+		const fs = require("node:fs")
+		const raw = fs.readFileSync(process.argv[1], "utf8")
+		const start = raw.indexOf("[")
+		const end = raw.lastIndexOf("]")
+		if (start < 0 || end <= start) throw new Error("npm pack --json 输出里找不到 JSON 数组")
+		const parsed = JSON.parse(raw.slice(start, end + 1))
+		if (!Array.isArray(parsed) || parsed.length !== 1) throw new Error("npm pack --json 应恰好报告 1 个 tarball，实际 " + (parsed && parsed.length))
+		const filename = parsed[0]?.filename
+		if (!filename) throw new Error("npm pack --json 未报告 filename")
+		process.stdout.write(filename)
+	' "$report")" || die "解析对端 npm pack 报告失败（见 $report）"
+	[ -n "$COMPANION_TARBALL" ] || die "对端 npm pack 未产出 tarball（见 $report）"
+	COMPANION_TARBALL="/work/dist/$(basename "$COMPANION_TARBALL")"
+	[ -f "$COMPANION_TARBALL" ] || die "对端 npm pack 报告的 tarball 不存在：$COMPANION_TARBALL"
+	COMPANION_PKG_NAME="$(tar -xzOf "$COMPANION_TARBALL" package/package.json | node -e '
+		let s = ""
+		process.stdin.on("data", (d) => { s += d })
+		process.stdin.on("end", () => process.stdout.write(JSON.parse(s).name ?? ""))
+	')" || die "读取对端 tarball 内 package.json 失败：$COMPANION_TARBALL"
+	[ -n "$COMPANION_PKG_NAME" ] || die "无法从 tarball 读出包名：$COMPANION_TARBALL"
+	[ "$COMPANION_PKG_NAME" = "$COMPANION" ] \
+		|| die "对端契约名与实际包名不一致：COMPANION=$COMPANION 但 tarball 里的 name=$COMPANION_PKG_NAME"
+	log pack "已打包对端：$(basename "$COMPANION_TARBALL")（包名 $COMPANION_PKG_NAME）"
+	export COMPANION_TARBALL COMPANION_PKG_NAME
 }
 
 # bundles 行决定 dsh 启动时装载哪些 bundle 层。CI 里这一步是手工补写的，
@@ -188,7 +216,8 @@ build_profile() {
 		[ -n "${COMPANION_TARBALL:-}" ] || die "COMPANION=$COMPANION 但缺少对端 tarball——profile 步必须在 pack 步之后（或用 STEPS=all）"
 		log profile "安装对端：$COMPANION"
 		dsh plugin --profile web add "$COMPANION_TARBALL"
-		register_bundle_rows "$COMPANION"
+		# bundles 行写实际包名（pack_companion 已校验它与 COMPANION 一致）。
+		register_bundle_rows "${COMPANION_PKG_NAME:-$COMPANION}"
 	fi
 	[ -f "$STATE/profiles/web/package.json" ] || die "dsh plugin add 未生成 $STATE/profiles/web/package.json"
 	register_bundle_rows dsh-llm-newapi

@@ -3,7 +3,18 @@
   "companion": "dsh-quota-panel",
   "clientBundles": ["dsh-llm-newapi/client.js", "dsh-quota-panel/client.js"],
   "rpcProbes": [
-    { "path": "/llm-newapi/ci-probe", "method": "ci-probe" },
-    { "path": "/api/dsh-quota-panel/specs", "method": "dsh-quota-panel/specs", "expect": "ok" }
+    {
+      "path": "/llm-newapi/ci-probe",
+      "method": "ci-probe",
+      "rpcId": "combo-self",
+      "expectOk": false,
+      "expectErrorIncludes": "unknown endpoint ci-probe"
+    },
+    {
+      "path": "/api/dsh-quota-panel/specs",
+      "method": "dsh-quota-panel/specs",
+      "rpcId": "combo-peer",
+      "expectOk": true
+    }
   ]
 }
