@@ -30,6 +30,29 @@ check_image() {
 	log image "dsh $(dsh --version)"
 }
 
+# 只读自检：打印镜像内本脚本与 probes/ 全部文件的 sha256（`<sha256>  <路径>`，按路径排序），
+# 以及构建配方指纹（TESTBED_BUILD_STAMP，见 Dockerfile），供宿主侧（matrix.mjs）确认
+# "这一格跑的确实是当前源码"，然后以 0 退出。
+# 背景：`docker compose run --build` 在 COPY 层判定为缓存命中时会**静默复用陈旧镜像**
+# （Task 7 实测：镜像内 boot-probe.sh 137 行 vs 宿主 191 行，矩阵整格假绿）。因此这里
+# 必须只读——不碰 $DSH_HOME、不写任何文件、不依赖 DSH_VERSION/GRID_LABEL 等运行期变量。
+# 路径打印**镜像内绝对路径**：宿主侧按"镜像路径 ← 宿主 testbed/ 下相对路径"的固定映射比对，
+# 两侧路径集合也必须逐一对应（多一个/少一个文件同样算不一致）。
+source_hash() {
+	local script="${BASH_SOURCE[0]}"
+	local probes_dir
+	probes_dir="$(cd "$(dirname "$script")/probes" && pwd)"
+	{
+		sha256sum "$script"
+		if [ -d "$probes_dir" ]; then
+			find "$probes_dir" -type f | LC_ALL=C sort | xargs -r sha256sum
+		fi
+	} | LC_ALL=C sort -k2
+	# 配方指纹单独一行、不参与上面的路径比对（它不是文件）；缺失时打印空值，
+	# 让宿主侧能明确区分"镜像没带指纹"与"指纹不一致"。
+	printf 'TESTBED_BUILD_STAMP=%s\n' "$(cat /etc/testbed-build-stamp 2>/dev/null | cut -d= -f2)"
+}
+
 assert_readonly() {
 	local m
 	for m in /host-dsh-home /plugin-src; do
@@ -240,6 +263,10 @@ run_l2() {
 main() {
 	if [ "${1:-}" = "--check-image" ]; then
 		check_image
+		return 0
+	fi
+	if [ "${1:-}" = "--source-hash" ]; then
+		source_hash
 		return 0
 	fi
 	want assert && assert_readonly

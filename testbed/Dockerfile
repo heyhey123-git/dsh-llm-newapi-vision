@@ -31,4 +31,23 @@ RUN chmod +x /usr/local/bin/testbed-entrypoint
 # 探针脚本：preserve 模式据此还原宿主 profile 的 bundle 行（见 entrypoint.sh）。
 COPY probes /usr/local/bin/probes
 
+# 构建配方指纹：把 (Dockerfile + entrypoint.sh) 的 sha256 写进镜像内文件 /etc/testbed-build-stamp，
+# 由 entrypoint 的 --source-hash 以 `TESTBED_BUILD_STAMP=<值>` 打印出来，供 matrix.mjs 比对。
+# 为什么需要：probes/ 与 entrypoint.sh 都进了镜像、可逐文件哈希，而 Dockerfile 本身进不了镜像；
+# 只改 Dockerfile（例如换 node 基础镜像）时，守卫本来看不出"镜像没重建"。
+# 算法必须与 matrix.mjs 的 buildStamp() 一致：按**固定顺序**（Dockerfile → entrypoint.sh）依次喂入
+# "<名字>\0<内容>\0" 后整体 sha256；名字用 basename，顺序不做排序。
+# 注意：RUN 的工作目录不是构建上下文，必须先把这两个源文件 COPY 进镜像再算，否则
+# `cat Dockerfile` 会以 "No such file or directory" **静默**喂入空内容，让指纹恒等于空哈希
+# （327f5b06…），与宿主永不相等 —— 表现为每格都判"陈旧"且 --no-cache 重建也不收敛。
+COPY Dockerfile entrypoint.sh /tmp/testbed-stamp-src/
+RUN cd /tmp/testbed-stamp-src \
+ && stamp="$( { printf 'Dockerfile\0'; cat Dockerfile; printf '\0'; \
+                  printf 'entrypoint.sh\0'; cat entrypoint.sh; printf '\0'; } \
+                | sha256sum | cut -d' ' -f1 )"; \
+    test -n "$stamp" && \
+    printf 'TESTBED_BUILD_STAMP=%s\n' "$stamp" > /etc/testbed-build-stamp \
+ && rm -rf /tmp/testbed-stamp-src \
+ && cat /etc/testbed-build-stamp
+
 ENTRYPOINT ["/usr/local/bin/testbed-entrypoint"]
