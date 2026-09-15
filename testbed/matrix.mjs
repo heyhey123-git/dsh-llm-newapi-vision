@@ -11,7 +11,7 @@
 //      不一致 → `docker compose build --no-cache testbed` 重建后重新核对；
 //      仍不一致 → 该格 FAIL（宁可真红，不要假绿），日志里同时打印两侧哈希。
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname, resolve, relative, basename } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -21,7 +21,6 @@ const repoRoot = resolve(here, '..')
 const composeFile = join(here, 'compose.yaml')
 const outDir = join(here, '.out')
 const dockerConfig = join(here, '.docker-config')
-mkdirSync(dockerConfig, { recursive: true })
 const DEFAULT_PORT = 13080
 
 // 镜像内路径 ←→ 宿主 testbed/ 下相对路径。两侧路径集合必须逐一对应（见 verifyImageFreshness）。
@@ -49,6 +48,8 @@ const argOf = (name, fallback) => {
 // 逗号分隔参数统一在这里解析并**当场拒绝空集合**：`--combos ,`、`--versions ,` 或纯空白值
 // 会被 filter(Boolean) 清空，若放行就成了"0 格全绿、退出 0"的假绿（与 dist-tags 那条防线同类）。
 // 这类调用是命令行写错，不是"没有可测的组合"，所以直接退 1，绝不进入矩阵。
+// 注意：这里只**定义**函数（无副作用）。所有调用点都在下面的 `if (isMain)` 块内，否则
+// `await import('matrix.mjs')` 会因导入者自己的 argv（例如 `--jobs 4`）被 process.exit 杀掉。
 const parseList = (flag, raw) => {
 	const list = raw.split(',').map((s) => s.trim()).filter(Boolean)
 	if (list.length === 0) {
@@ -57,23 +58,6 @@ const parseList = (flag, raw) => {
 	}
 	return list
 }
-const combos = parseList('--combos', argOf('--combos', 'self'))
-// --jobs 目前**只是保留参数**：矩阵仍是串行外循环（每格自带 build → 自检 → run 的前置，
-// 并行会打乱端口与镜像重建的时序）。为避免"设了 --jobs 其实是静默无效"的误判，非 1 的值
-// 直接报错；真要并行时再实现并删掉这条拒绝。
-const jobs = Number(argOf('--jobs', '1'))
-if (jobs !== 1) {
-	console.error(`[matrix] --jobs 当前仅为保留参数，矩阵仍是串行执行，只接受 --jobs 1（收到：${JSON.stringify(argOf('--jobs', '1'))}）`)
-	process.exit(1)
-}
-// 默认开启宿主零改动快照；`--no-check-host` 关掉它（用于只想看格结果的场合），
-// `--check-host` 是显式开（与 brief 的接口签名一致，即便默认已是开）。两者同给即报错，
-// 避免"以为关了其实开着"这类静默歧义。
-if (argv.includes('--check-host') && argv.includes('--no-check-host')) {
-	console.error('[matrix] --check-host 与 --no-check-host 不能同时给出')
-	process.exit(1)
-}
-const checkHost = !argv.includes('--no-check-host')
 
 // 版本解析：显式给出则原样使用（并打印来源）；否则解析 dist-tags 的 latest + next 去重。
 function resolveVersions() {
@@ -194,6 +178,9 @@ const composeEnv = (version, label) => ({
 })
 
 function compose(args, env) {
+	// DOCKER_CONFIG 目录在**真正要跑 docker 时**才建（幂等）：放在模块顶层会让 `import` 也产生
+	// 文件系统副作用，而 import 只应提供纯函数。
+	mkdirSync(dockerConfig, { recursive: true })
 	return spawnSync('docker', ['compose', ...args], { cwd: here, env, encoding: 'utf8' })
 }
 
@@ -373,12 +360,42 @@ function runGrid(version, combo, port, noCacheDone) {
 export { hostSources, hostDigest, hostBuildStamp, readImageHash, diffSources, diffStamp, hostSnapshot, BUILD_STAMP_ENV, BUILD_STAMP_SOURCES }
 
 // 只有被当作脚本直接运行时（`node matrix.mjs`）才跑矩阵；被 import 时（例如宿主侧复算指纹、
-// 哈希做核对）只提供上面这些纯函数，绝不在 import 期间执行任何 docker 命令。
+// 哈希做核对）只提供上面这些纯函数，绝不在 import 期间执行任何 docker 命令，也绝不 process.exit。
 // 判据是"直接执行"：入口脚本的真实路径与 import.meta.url 相等。不再用 `__MATRIX_MAIN__`
 // 那种默认执行、需要调用方主动设置环境变量才能避免副作用的写法——它默认执行，
 // `import('./matrix.mjs')` 会跑完整矩阵并在结尾 process.exit() 掉导入者（Task 8 实测踩过）。
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+// argv[1] 必须**先 realpath** 再比较：通过软链调用（`node /tmp/link.mjs`）时 argv[1] 保持
+// 软链路径，而 import.meta.url 是 realpath，直接比较会让 isMain 为 false → 静默空转、退出 0
+// （另一种假绿）。realpath 失败（路径不存在等）按"不是直接执行"处理，同样退化为纯 import。
+const realArgv1 = (() => {
+	try {
+		return realpathSync(process.argv[1])
+	} catch {
+		return undefined
+	}
+})()
+const isMain = process.argv[1] !== undefined && realArgv1 !== undefined && import.meta.url === pathToFileURL(realArgv1).href
 if (isMain) {
+	// 参数解析与校验全部在主流程内：解析即校验、校验失败即退 1；一旦提到模块顶层，
+	// `await import('matrix.mjs')` 就会被导入者自己的 argv（例如 `--jobs 4`）杀掉、import 永不返回。
+	const combos = parseList('--combos', argOf('--combos', 'self'))
+	// --jobs 目前**只是保留参数**：矩阵仍是串行外循环（每格自带 build → 自检 → run 的前置，
+	// 并行会打乱端口与镜像重建的时序）。为避免"设了 --jobs 其实是静默无效"的误判，非 1 的值
+	// 直接报错；真要并行时再实现并删掉这条拒绝。
+	const jobs = Number(argOf('--jobs', '1'))
+	if (jobs !== 1) {
+		console.error(`[matrix] --jobs 当前仅为保留参数，矩阵仍是串行执行，只接受 --jobs 1（收到：${JSON.stringify(argOf('--jobs', '1'))}）`)
+		process.exit(1)
+	}
+	// 默认开启宿主零改动快照；`--no-check-host` 关掉它（用于只想看格结果的场合），
+	// `--check-host` 是显式开（与 brief 的接口签名一致，即便默认已是开）。两者同给即报错，
+	// 避免"以为关了其实开着"这类静默歧义。
+	if (argv.includes('--check-host') && argv.includes('--no-check-host')) {
+		console.error('[matrix] --check-host 与 --no-check-host 不能同时给出')
+		process.exit(1)
+	}
+	const checkHost = !argv.includes('--no-check-host')
+
 	const { source, versions } = resolveVersions()
 	// 兜底（--combos 已在解析处早退）：任何路径都不许带着空集合进入循环——0 格跑完只会打印
 	// "0/0 格通过；宿主零改动：是"并退出 0，那正是本脚本最该避免的假绿。
