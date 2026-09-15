@@ -61,6 +61,46 @@ seed_home() {
 	log seed "DSH_HOME 就绪：$STATE"
 }
 
+# 复制源码时必须排除 node_modules（122 MB）与 .tmp-*（本仓库的缓存/试验目录）；
+# 刻意不复制 .git：因此产物新鲜度检查不能用 git diff，改用内容哈希。
+stage_sources() {
+	rm -rf /work/plugin
+	mkdir -p /work/plugin
+	tar -C /plugin-src \
+		--exclude=./node_modules --exclude=./.git --exclude='./.tmp-*' \
+		-cf - . | tar -C /work/plugin -xf -
+	[ -f /work/plugin/package.json ] || die "源码暂存失败：/work/plugin/package.json 不存在"
+	log stage "源码已暂存：/work/plugin"
+}
+
+lib_digest() {
+	find lib -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
+
+run_l1() {
+	cd /work/plugin
+	log l1 "npm ci"
+	npm ci --no-audit --no-fund
+	log l1 "typecheck（host + client 两套 tsconfig）"
+	npm run typecheck
+	local before after
+	before="$(lib_digest)"
+	log l1 "build"
+	npm run build
+	after="$(lib_digest)"
+	if [ "$before" != "$after" ]; then
+		die "lib/ 与全新构建不一致：产物过期，请在本地 npm run build 后提交重建的 lib/（等价于 CI 的 committed artifacts are current）"
+	fi
+	log l1 "产物新鲜度：lib/ 内容哈希与全新构建一致"
+	log l1 "test:client（vitest）"
+	npm run test:client
+	log l1 "test:host（host-compat，对齐容器内实际安装的 dsh-llm）"
+	npm run test:host
+	log l1 "smoke（真实 Cordis 组合）"
+	node test/smoke.mjs
+	log l1 "全部通过"
+}
+
 main() {
 	if [ "${1:-}" = "--check-image" ]; then
 		check_image
@@ -68,6 +108,8 @@ main() {
 	fi
 	want assert && assert_readonly
 	want seed && seed_home
+	want stage && stage_sources
+	want l1 && run_l1
 	log done "所选步骤完成：STEPS=${STEPS}"
 }
 
