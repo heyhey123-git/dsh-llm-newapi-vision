@@ -1,26 +1,27 @@
 /**
  * Register a {@link NewApiAdapter} for the `newapi` provider route on
  * `ctx.llm`, with connection facts resolved per request instead of frozen at
- * load: the plugin layers its `cordis.yml` entry config under the optional
- * `llm-newapi` user-settings section (`ctx.settings`) and resolves the API
- * key through the optional credential seam (`ctx.credentials`), so a changed
- * base URL, catalog, or key reaches the very next request without restarting
- * anything, while an in-flight stream keeps the facts it started with. The
- * one registration-captured fact — the retry policy — re-registers the route
- * in place when it changes. The plugin also serves model discovery for the
- * `llm-newapi` settings namespace by interrogating `GET {baseURL}/models`.
+ * load: the plugin reads its own volatile config references (the profile
+ * patch and the web settings page write them through the settings service)
+ * and resolves the API key through the optional credential seam
+ * (`ctx.credentials`), so a changed base URL, catalog, or key reaches the
+ * very next request without re-applying the plugin, while an in-flight stream
+ * keeps the facts it started with. The one registration-captured fact — the
+ * retry policy — re-registers the route in place when it changes. The plugin
+ * also serves model discovery for the `llm-newapi` settings namespace by
+ * interrogating `GET {baseURL}/models`.
  * @module dsh-llm-newapi
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, VolatileSnapshot } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { assertUsableApiKey, LlmError, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
-import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
+import type { AdapterRegistrationHandle, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import llmManifest from '@deepseek-ai/dsh-llm/package.json' with { type: 'json' }
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 // Type-only: pulls the cordis Context merge that adds the `settings`
-// service (ctx.settings.installSection) into this program.
+// service (ctx.settings.configure) into this program.
 import type {} from '@deepseek-ai/dsh-settings'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
@@ -50,7 +51,7 @@ export { serializeRequest } from './serialize.ts'
 export type { NewApiAdapterOptions, NewApiCatalogModel, NewApiConnectionOptions } from './adapter.ts'
 export type * from './types.ts'
 
-const MINIMUM_DSH_VERSION = '0.1.5-rc.1'
+const MINIMUM_DSH_VERSION = '0.1.7-rc.1'
 
 type SemverIdentifier = number | string
 interface ParsedSemver {
@@ -142,17 +143,21 @@ export const DEFAULT_BASE_URL = 'https://newapi.example.com/v1'
 const PROVIDER = 'newapi'
 
 /**
- * Plugin config, validated by the same-named schemastery schema and doubling
- * as the `llm-newapi` settings-section shape. Every field is optional in
- * yml: `baseURL` falls back to $NEWAPI_BASE_URL from a trusted environment
- * layer, then the placeholder {@link DEFAULT_BASE_URL} — a request against
- * the placeholder fails as TRANSPORT at first use, naming the endpoint to
- * fix. The API key is not a config value at all: it lives in the
+ * Plugin config values, validated by the same-named schemastery schema and
+ * doubling as the `llm-newapi` settings-section shape. Every field is
+ * optional in yml: `baseURL` falls back to $NEWAPI_BASE_URL from a trusted
+ * environment layer, then the placeholder {@link DEFAULT_BASE_URL} — a
+ * request against the placeholder fails as TRANSPORT at first use, naming the
+ * endpoint to fix. The API key is not a config value at all: it lives in the
  * credentials store under the fixed reference `newapi` (the web settings
  * page writes it), and a request without any stored key fails with
  * `MISSING_CREDENTIAL`, not at plugin load.
+ *
+ * This is the plain-value shape a composition entry or programmatic caller
+ * writes; the running plugin reads the schema-derived {@link Config} whose
+ * volatile fields are references (see {@link snapshotConfig}).
  */
-export interface Config {
+export interface NewApiConfig {
   /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
   baseURL?: string
   /** Advisory models shown by discovery consumers; defaults to none — a gateway's model set is deployment-specific. */
@@ -170,12 +175,7 @@ export interface Config {
   maxTokens?: number
   /** Maximum gateway idle time while one stream read is outstanding (default five minutes). */
   streamIdleTimeoutMs?: number
-  /**
-   * Forward proxy for the models.dev catalog download performed by the
-   *「更新模型信息」action: disabled by default; when enabled, that one
-   * request is routed through `proxy.url` (a plain HTTP forward proxy).
-   * Gateway traffic is untouched.
-   */
+  /** Forward proxy for the models.dev catalog download performed by the「更新模型信息」action. */
   proxy?: ProxyConfig
   /**
    * Match-shaping hints for the models.dev params lookup: family prefixes
@@ -209,25 +209,154 @@ const catalogModel: z<NewApiCatalogModel> = z.object({
 /** Default forward proxy: the conventional Clash port on loopback. */
 export const DEFAULT_PROXY_URL = 'http://127.0.0.1:7890'
 
-const proxySchema: z<ProxyConfig> = z.object({
-  enabled: z.boolean().default(false),
-  url: z.string().default(DEFAULT_PROXY_URL),
+/**
+ * Report a resolver error as a schema issue. The settings write point
+ * validates the full Config through this schema before persisting, so an
+ * unserviceable value has to fail here to be refused instead of stored.
+ * Schemastery calls a transform callback with the value only, so the issue
+ * carries no path; every message below already names its field.
+ * @param error - the resolver error, whose message already names the field.
+ * @returns a ValidationError carrying that message.
+ */
+function asValidationError(error: unknown): Error {
+  return new z.ValidationError(error instanceof Error ? error.message : String(error), { path: [] })
+}
+
+/** A configured base URL: blank passes (resolved later), a typed value must already be usable. */
+const baseURLField = z.transform(z.string(), (value) => {
+  if (value.trim().length === 0) return value
+  try {
+    normalizeBaseUrl(value)
+  } catch (error) {
+    throw asValidationError(error)
+  }
+  return value
 })
 
-export const Config: z<Config> = z.object({
-  baseURL: z.string(),
-  models: z.array(catalogModel).default([]),
-  modelExcludePatterns: z.array(z.string()).default([...DEFAULT_MODEL_EXCLUDE_PATTERNS]),
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
-  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
-  proxy: proxySchema.default({ enabled: false, url: DEFAULT_PROXY_URL }),
+/** The models.dev download proxy; the URL is judged only while the proxy is enabled. */
+const proxyField = z.transform(z.object({
+  enabled: z.boolean().default(false),
+  url: z.string().default(DEFAULT_PROXY_URL),
+}), (value): ProxyConfig => {
+  // The inner schema has already normalized both fields; the nullable input
+  // type only mirrors what validate() accepts.
+  const enabled = value.enabled === true
+  const url = typeof value.url === 'string' ? value.url : DEFAULT_PROXY_URL
+  // Only judged while enabled: a stored disabled proxy with a stale URL
+  // must not fail the whole section.
+  if (enabled) {
+    let protocol: string | undefined
+    try {
+      protocol = new URL(url).protocol
+    } catch {
+      // Reported below as the absolute-URL failure.
+    }
+    if (protocol === undefined) {
+      throw asValidationError(new Error(`${PKG}: proxy.url must be an absolute URL (got: ${url})`))
+    }
+    if (!/^https?:$/.test(protocol)) {
+      throw asValidationError(new Error(`${PKG}: proxy.url must be an http(s) URL (got: ${url})`))
+    }
+  }
+  return { enabled, url }
+})
+
+/** The advisory catalog; the same entry checks the resolver re-judges at runtime. */
+const modelsField = z.transform(z.array(catalogModel).default([]), (value) => {
+  try {
+    resolveModels(value)
+  } catch (error) {
+    throw asValidationError(error)
+  }
+  return value
+})
+
+/** Exclude patterns; an empty entry would filter nothing yet read as configured. */
+const excludePatternsField = z.transform(
+  z.array(z.string()).default([...DEFAULT_MODEL_EXCLUDE_PATTERNS]),
+  (value) => {
+    for (const pattern of value) {
+      if (pattern.length === 0) {
+        throw asValidationError(new Error(`${PKG}: modelExcludePatterns entries must be non-empty`))
+      }
+    }
+    return value
+  },
+)
+
+const configSchema = z.object({
+  baseURL: baseURLField.volatile(),
+  models: modelsField.volatile(),
+  modelExcludePatterns: excludePatternsField.volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
+  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
+  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
+  proxy: proxyField.volatile(),
   providerHints: z.object({
     defaults: z.object({}),
     models: z.object({}),
-  }),
-  retryPolicy: RetryPolicySchema,
+  }).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
+
+/**
+ * The plugin config schema. Every field is volatile: the settings form edits
+ * them through the active profile patch, and the Loader commits a
+ * volatile-only edit into the running config references without re-applying
+ * the plugin, so the next resolution sees it. Field-level checks live here —
+ * not only in the resolver — because the settings write point validates this
+ * exact schema before persisting, and the resolver re-judges every bound for
+ * programmatic construction.
+ */
+export const Config = configSchema
+
+/**
+ * The config a running plugin instance holds: schemastery replaced every
+ * volatile field with a stable reference, updated in place by the Loader.
+ * Read plain values through {@link snapshotConfig}; the exported
+ * {@link NewApiConfig} is the plain-value shape callers write.
+ */
+export type Config = ReturnType<typeof configSchema>
+
+/**
+ * Restore the plain type of one volatile snapshot. At runtime a snapshot is
+ * the schema output; the mapped `VolatileSnapshot` type only obscures array
+ * methods and adds optionality, so this is a type-level recovery, not a
+ * conversion.
+ * @param snapshot - the reference's current snapshot, possibly absent.
+ * @returns the same value typed as the schema output, possibly absent.
+ */
+function plain<T>(snapshot: VolatileSnapshot<T> | undefined): T | undefined {
+  return snapshot as T | undefined
+}
+
+/**
+ * Read the current plain values from the running config's volatile
+ * references. The references are updated in place on a volatile-only commit,
+ * so this always returns the latest committed generation without re-applying
+ * the plugin.
+ * @param config - the config object this plugin instance was applied with.
+ * @returns the plain values the resolver consumes.
+ */
+function snapshotConfig(config: Config): NewApiConfig {
+  const baseURL = plain<string>(config.baseURL.get())
+  const maxTokens = plain<number>(config.maxTokens.get())
+  const providerHints = plain<ProviderHints>(config.providerHints.get())
+  const retryPolicy = plain<RetryPolicyConfig>(config.retryPolicy.get())
+  return {
+    ...baseURL === undefined ? {} : { baseURL },
+    models: plain<NewApiCatalogModel[]>(config.models.get()) ?? [],
+    modelExcludePatterns:
+      plain<string[]>(config.modelExcludePatterns.get()) ?? [...DEFAULT_MODEL_EXCLUDE_PATTERNS],
+    defaultContextWindow: plain<number>(config.defaultContextWindow.get()) ?? DEFAULT_CONTEXT_WINDOW,
+    ...maxTokens === undefined ? {} : { maxTokens },
+    streamIdleTimeoutMs:
+      plain<number>(config.streamIdleTimeoutMs.get()) ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    proxy: plain<ProxyConfig>(config.proxy.get()) ?? { enabled: false, url: DEFAULT_PROXY_URL },
+    ...providerHints === undefined ? {} : { providerHints },
+    ...retryPolicy === undefined ? {} : { retryPolicy },
+  }
+}
 
 /**
  * One resolution's complete request facts. Connection and credential facts
@@ -285,12 +414,13 @@ function resolveModels(models: readonly NewApiCatalogModel[] | undefined): NewAp
  * facts. Programmatic construction may bypass Schemastery normalization, so
  * every default and bound is re-judged here — for the composition entry at
  * load (fail loud) and for each settings snapshot at its first use.
- * @param config - raw plugin config or resolved settings snapshot.
+ * @param config - plain plugin config values (a composition entry, or a
+ * {@link snapshotConfig} of the running volatile references).
  * @param environment - this run's environment layers, or `undefined` outside
  * the product CLI. A trusted layer may supply the gateway endpoint.
  * @returns validated connection facts plus the credential reference.
  */
-export function resolveAdapterOptions(config: Config, environment?: ReturnType<typeof launchEnvironmentOf>): ResolvedNewApiOptions {
+export function resolveAdapterOptions(config: NewApiConfig, environment?: ReturnType<typeof launchEnvironmentOf>): ResolvedNewApiOptions {
   // Absent everywhere is the placeholder, not a load failure: the plugin stays
   // mountable so configuration surfaces can offer the route, and a request
   // against the placeholder fails as TRANSPORT at first use, naming the
@@ -351,24 +481,38 @@ export function resolveAdapterOptions(config: Config, environment?: ReturnType<t
 }
 
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  let lastRaw: Config | undefined
+  let lastRaw: NewApiConfig | undefined
   let lastGood: ResolvedNewApiOptions | undefined
+  let registration: AdapterRegistrationHandle | undefined
+  let registeredPolicy: ResolvedNewApiOptions['retryPolicy'] | undefined
   const options = (): ResolvedNewApiOptions => {
-    const raw = current()
-    if (raw === lastRaw && lastGood !== undefined) return lastGood
+    // Volatile references are updated in place, so every read re-snapshots;
+    // the deep compare keeps one resolution per unchanged generation.
+    const raw = snapshotConfig(config)
+    if (lastGood !== undefined && deepEqualJson(raw, lastRaw)) return lastGood
     try {
       const next = resolveAdapterOptions(raw, launchEnvironmentOf(ctx))
       lastRaw = raw
       lastGood = next
+      // The registry captures the retry policy at registration, so it is the
+      // one fact per-request resolution cannot refresh. `replace` re-reads it
+      // in one synchronous registry section: disposing and re-registering
+      // instead would publish an empty route set between the two, and an
+      // observer that reacted to it would see this provider disappear and
+      // come back.
+      if (registration !== undefined && !deepEqualJson(next.retryPolicy, registeredPolicy)) {
+        registration.replace([PROVIDER])
+        registeredPolicy = next.retryPolicy
+      }
       return next
     } catch (error) {
-      // Static composition resolves before anything registers, so this branch
-      // only sees a live settings snapshot failing a beyond-schema bound:
-      // keep serving the last good facts and say so once per bad snapshot.
+      // The schema refuses unserviceable values at the write point, so this
+      // branch only sees a generation that bypassed it (programmatic config,
+      // an invalid environment-supplied baseURL): keep serving the last good
+      // facts and say so once per bad generation.
       if (lastGood === undefined) throw error
       lastRaw = raw
-      ctx.logger.error(`${PKG}: keeping the last good configuration after an invalid settings section`)
+      ctx.logger.error(`${PKG}: keeping the last good configuration after an invalid configuration generation`)
       ctx.logger.error(error)
       return lastGood
     }
@@ -431,25 +575,13 @@ export function apply(ctx: Context, config: Config): void {
       declared: true,
     },
   ])
-  // Route effects bind to this apply fiber via the stable `ctx` reference,
-  // even when a swap runs inside the scoped settings callback below.
-  const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
-  let registeredPolicy = options().retryPolicy
-  const ensureRegistrationFacts = (): void => {
-    const policy = options().retryPolicy
-    if (deepEqualJson(policy, registeredPolicy)) return
-    // The registry captures the retry policy at registration, so it is the one
-    // fact per-request resolution cannot refresh. `replace` re-reads it in one
-    // synchronous registry section: disposing and re-registering instead would
-    // publish an empty route set between the two, and an observer that reacted
-    // to it would see this provider disappear and come back.
-    registration.replace([PROVIDER])
-    registeredPolicy = policy
-  }
+  // Route effects bind to this apply fiber via the stable `ctx` reference.
+  registration = ctx.llm.registerAdapter([PROVIDER], adapter)
+  registeredPolicy = options().retryPolicy
   // Model discovery for the settings namespace this plugin owns: the Models
   // page interrogates the gateway's /models with the draft's endpoint and
   // one-shot credential, or the current snapshot's facts. The runtime hands
-  // caller cancellation as a separate signal (0.1.5 seam).
+  // caller cancellation as a separate signal.
   ctx.llm.registerModelDiscovery(NS, (request, signal) => adapter.discoverModels(request, signal))
 
   // Host-side endpoint for the「更新模型信息」action: the browser names
@@ -460,11 +592,11 @@ export function apply(ctx: Context, config: Config): void {
   //
   // The channel goes through the connection service's own `register(owner,
   // channel, handler)` rather than the `rpc.handle(channel, handler)` the
-  // type advertises. On the 0.1.5 host line `handle` is unusable: its `rpc`
-  // getter captures `this.ctx`, and that captured context is the connection
-  // service's own scope, which has no `webServer` injected. `register` then
-  // evaluates `owner.webServer.register(route)`, cordis answers
-  // `cannot get property "webServer" without inject`, and the throw is
+  // type advertises. On the 0.1.7 host line `handle` is still unusable: its
+  // `rpc` getter captures `this.ctx`, and that captured context is the
+  // connection service's own scope, which has no `webServer` injected.
+  // `register` then evaluates `owner.webServer.register(route)`, cordis
+  // answers `cannot get property "webServer" without inject`, and the throw is
   // swallowed by the effect — so the channel silently never appears and the
   // browser meets the SPA fallback's 405 (the boot check catches exactly
   // this). Passing our own inject-scope context as the owner fixes it, and
@@ -514,23 +646,15 @@ export function apply(ctx: Context, config: Config): void {
     ), 'llm-newapi: models-dev RPC channel')
   })
 
-  // The settings section installs through the `settings` service seam
-  // (0.1.5 seam): the consumer registers while the provider is present and
-  // falls back to the composition entry when it detaches, exactly the
-  // layering the old top-level installSettingsSection helper provided.
+  // Settings presentation policy (0.1.7 seam): configuration now projects
+  // from this plugin's own profile entry, whose Config schema marks every
+  // field volatile — the Loader commits a volatile-only edit into the running
+  // references, and the write point validates the full Config before
+  // persisting. This plugin ships its own Web page (the browser half registers
+  // the `settings.section`), so it opts out of schema-generated pages; the
+  // child names this plugin's fiber, and a late-loading or replaced Settings
+  // service picks the policy up.
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      // Refuse an unserviceable section where it is written: without this a
-      // schema-valid value the adapter cannot serve (a non-http(s) baseURL,
-      // an empty exclude-pattern entry) stores with a success notice and
-      // then silently keeps the last good facts at every request.
-      validate: (value) => {
-        resolveAdapterOptions(value, launchEnvironmentOf(ctx))
-      },
-      setSource: (source) => {
-        current = source
-      },
-      onChange: ensureRegistrationFacts,
-    })
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
   })
 }

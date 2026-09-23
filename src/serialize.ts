@@ -1,22 +1,24 @@
 /**
  * Serialize harness messages into gateway chat completions. User text is
  * joined; assistant text becomes `content`, tool calls become `tool_calls`,
- * and tool results become separate tool messages. Assistant reasoning is
- * replayed as `reasoning_content` only on tool-call turns, as required by
+ * and tool-role messages pass through as tool messages. Assistant reasoning
+ * is replayed as `reasoning_content` only on tool-call turns, as required by
  * DeepSeek-family upstreams (other OpenAI-compatible upstreams ignore the
  * field). Core image blocks are rejected explicitly because this wire route
- * is text-only; unknown declaration-merged block types retain the adapter's
- * documented extension fallback. No reasoning-control fields are emitted:
- * the adapter declares no reasoning efforts, so callers cannot pass one.
+ * is text-only; developer tool-change blocks are rejected like the official
+ * adapter rejects them, because this wire has no projection for them. Unknown
+ * declaration-merged block types retain the adapter's documented extension
+ * fallback. No reasoning-control fields are emitted: the adapter declares no
+ * reasoning efforts, so callers cannot pass one.
  * @module dsh-llm-newapi/serialize
  */
 
 import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { AssistantMessage, ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { WireMessage, WireRequest, WireTool } from './types.ts'
 
-/** Join the text blocks of a message (used for user/tool-result content). */
-function flattenText(blocks: ContentBlock[]): string {
+/** Join the text blocks of a message (used for user/tool content). */
+function flattenText(blocks: readonly ContentBlock[]): string {
   return blocks
     .filter(block => block.type === 'text')
     .map(block => block.text)
@@ -31,7 +33,7 @@ function assertTextOnly(blocks: readonly ContentBlock[]): void {
 }
 
 /** Serialize one assistant message (text + reasoning + tool calls). */
-function serializeAssistant(message: Message): WireMessage {
+function serializeAssistant(message: AssistantMessage): WireMessage {
   const text = flattenText(message.content)
   const reasoning = message.content
     .filter(block => block.type === 'reasoning')
@@ -63,16 +65,35 @@ function serializeAssistant(message: Message): WireMessage {
 }
 
 /**
- * Serialize the conversation. `tool-result` blocks become standalone
- * `{role: 'tool'}` messages; the harness puts each tool result in its own
- * user-role message, so a mixed user message contributes its text first and
- * its tool results as separate wire messages after.
- * @param messages - the harness conversation, in order.
- * @returns the wire messages; order preserved, each tool result expanded into its own entry.
+ * Reject block families this wire cannot project: developer messages and the
+ * `tool-addition`/`tool-removal` blocks they carry describe dynamic tool
+ * inventory changes, which chat completions has no field for. The official
+ * DeepSeek adapter rejects them the same way instead of silently dropping
+ * them, because a dropped tool change would make the request inconsistent
+ * with the model's tool schema.
+ * @param message - one harness message or request-only user input.
  */
-export function serializeMessages(messages: Message[]): WireMessage[] {
+function assertSupportedBlocks(message: RequestMessage): void {
+  if (message.role === 'developer') {
+    throw new LlmError('The NewAPI chat-completions adapter does not support developer messages.', 'UNSUPPORTED_CONTENT')
+  }
+  if (message.content.some(block => block.type === 'tool-addition' || block.type === 'tool-removal')) {
+    throw new LlmError('The NewAPI chat-completions adapter does not support tool-change blocks.', 'UNSUPPORTED_CONTENT')
+  }
+}
+
+/**
+ * Serialize the conversation. Harness `tool` messages map one-to-one onto the
+ * wire's `{role: 'tool'}` messages; user, system, and assistant messages keep
+ * their roles, and a request-only user input (no durable identity) serializes
+ * exactly like a durable user message.
+ * @param messages - the harness conversation or request-only inputs, in order.
+ * @returns the wire messages; order preserved.
+ */
+export function serializeMessages(messages: readonly RequestMessage[]): WireMessage[] {
   const wire: WireMessage[] = []
   for (const message of messages) {
+    assertSupportedBlocks(message)
     assertTextOnly(message.content)
     if (message.role === 'system') {
       wire.push({ role: 'system', content: flattenText(message.content) })
@@ -82,21 +103,17 @@ export function serializeMessages(messages: Message[]): WireMessage[] {
       wire.push(serializeAssistant(message))
       continue
     }
-    // user role: tool results ride in user messages in the harness
-    // vocabulary, but the gateway wants them as role:'tool' messages.
-    const toolResults = message.content.filter(block => block.type === 'tool-result')
-    const text = flattenText(message.content)
-    if (text.length > 0 || toolResults.length === 0) {
-      wire.push({ role: 'user', content: text })
-    }
-    for (const result of toolResults) {
+    if (message.role === 'tool') {
       wire.push({
         role: 'tool',
-        tool_call_id: result.toolCallId,
+        tool_call_id: message.toolCallId,
         // Empty tool output still needs SOME content on the wire.
-        content: flattenText(result.content) || '(no output)',
+        content: flattenText(message.content) || '(no output)',
       })
+      continue
     }
+    // Durable user message or request-only user input.
+    wire.push({ role: 'user', content: flattenText(message.content) })
   }
   return wire
 }

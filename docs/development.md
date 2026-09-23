@@ -2,9 +2,9 @@
 
 [返回 README](../README.zh-CN.md) · [配置指南](configuration.md) · [实现设计](../DESIGN.md)
 
-本文面向维护者。当前包版本为 `0.8.6-rc.3`，适配 dsh `0.1.5` 单宿主线。rc.2 已发布；rc.3 增加拉取模型时的全选勾选框。本轮保持 RC，不执行正式版晋升。
+本文面向维护者。当前包版本为 `0.8.6-rc.4`，适配 dsh `0.1.7` 单宿主线。rc.3 是 0.1.5 线的最后一个版本；rc.4 随宿主升级重做设置接入（volatile 配置、schema 校验）。本轮保持 RC，不执行正式版晋升。
 
-开发依赖与 CI 的固定宿主都使用 **`0.1.5-rc.2`**，而 peer 下限与运行时最低版本仍是 **`0.1.5-rc.1`**。这两个数字不同是有意的：pin 表示我们构建和验证所针对的版本，下限表示插件仍愿意接受的最低版本。`0.1.5-rc.1` 与 `0.1.5-rc.2` 发布的是同一份 `lib/**` 代码，插件在两者下构建出的产物逐字节相同，因此保留较低的下限没有代价。若将来某个补丁版本改变了导出面，`surfaceSharedBy` 不再包含它，门禁会失败——此时应按下文流程处理，而不是直接抬低下限。
+开发依赖与 CI 的固定宿主都使用 **`0.1.7-rc.1`**，而 peer 下限与运行时最低版本也是 **`0.1.7-rc.1`**。pin 表示我们构建和验证所针对的版本，下限表示插件仍愿意接受的最低版本；同一条宿主线内两者相同，是因为 0.1.7 是设置架构变更后的第一个可用版本，没有更低的同线版本可覆盖。若将来某个补丁版本改变了导出面，`surfaceSharedBy` 不再包含它，门禁会失败——此时应按下文流程处理，而不是直接抬低下限。
 
 ## 本地构建
 
@@ -64,11 +64,11 @@ npm pack
 5. 用同一 tarball 验证真实宿主启动、设置页加载、凭据与配置保存、模型发现和文本/工具调用。
 6. 更新双语 README 的版本状态、指定版本安装命令和已知限制。
 
-注意 npm 的 prerelease 范围：`>=0.1.2-rc.1` 不会自动接受 `0.1.5-rc.1`，因此本插件改用 `>=0.1.5-rc.1 <0.1.6` 明确锁定新宿主线。最低版本 guard、peer 元数据与“已验证版本”表是三个不同层面的约束，不能互相替代。详细依据见[本次适配评估](2026-09-10-dsh-0.1.5-rc.1-assessment.md)。
+注意 npm 的 prerelease 范围：`>=0.1.5-rc.1` 不会自动接受 `0.1.7-rc.1`，因此本插件改用 `>=0.1.7-rc.1 <0.1.8` 明确锁定新宿主线。最低版本 guard、peer 元数据与“已验证版本”表是三个不同层面的约束，不能互相替代。详细依据见[本次适配评估](2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
 
 ### 登记新的宿主补丁版本
 
-`test/fixtures/dsh-llm-0.1.5.exports.json` 的 `surfaceSharedBy` 列出实测与快照共享同一导出面的版本。上游常以完全相同的代码重切 RC，所以按补丁号判定兼容会误报。遇到未列出的版本时，宿主兼容门禁会失败并提示比对导出面，步骤是：
+`test/fixtures/dsh-llm-0.1.7-rc.1.exports.json` 的 `surfaceSharedBy` 列出实测与快照共享同一导出面的版本。上游常以完全相同的代码重切 RC，所以按补丁号判定兼容会误报。遇到未列出的版本时，宿主兼容门禁会失败并提示比对导出面，步骤是：
 
 1. 下载新旧两个版本的实际 npm 包，逐个文件比对，确认 `lib/**` 是否一致。
 2. 用新版本安装依赖，运行 `npm run typecheck`、`npm run build` 和 `npm test`，并确认重建后的 `lib/` 无漂移。
@@ -79,30 +79,28 @@ npm pack
 
 | 项目 | 要求 |
 | --- | --- |
-| 包版本与标签 | `0.8.6-rc.3` / `v0.8.6-rc.3` |
+| 包版本与标签 | `0.8.6-rc.4` / `v0.8.6-rc.4` |
 | GitHub Release | Pre-release |
 | npm dist-tag | `next` |
 | npm / Git `latest` | 继续保持 `0.8.4` |
-| 已有 rc.1 | 保留原标签和发布包，不覆盖 |
+| 已有 rc.1–rc.3 | 保留原标签和发布包，不覆盖 |
 
 完成适配后再更新包版本与锁文件。候选提交必须通过构建、插件规范检查和真实启动检查，并验证浏览器与网关的实际行为。合入 main 后，从已经确认的提交创建 RC 标签；标签工作流负责打包与发布。**本次不要填写 workflow_dispatch 的 `rc_tag` 晋升输入。**
 
-当前进度：0.1.5 适配已随 `0.8.6-rc.2` 发布，CI 的 build、plugin-check 与 boot 三个任务在 main 和标签上都已通过——真实宿主启动检查覆盖了 tarball 安装、浏览器认证、客户端加载清单与自有 RPC 通道。`0.8.6-rc.3` 在其上增加拉取模型时的全选勾选框（仅浏览器半边，`lib/index.js` 未变）。
+当前进度：0.1.7 适配（设置架构改为 volatile 配置、消息序列化跟随 tool-role 消息）在工作区内完成，版本切为 `0.8.6-rc.4`，尚待真实宿主启动检查确认。`0.8.6-rc.3` 是 0.1.5 线的最后一个版本。
 
-关于 RPC 通道的一个坑：0.1.5 宿主线上 `connection.rpc.handle()` 不可用，它内部的 effect 会抛 `cannot get property "webServer" without inject` 并被吞掉，导致通道静默缺失、浏览器撞上 405。插件改为把自身作用域作为 owner 传给 `connection.register(owner, channel, handler)`。细节见 [DESIGN](DESIGN.md)；单元测试的替身已复现该守卫，boot 检查是最终防线。
+关于 RPC 通道的一个坑：0.1.7 宿主线上 `connection.rpc.handle()` 仍不可用，它内部的 effect 会抛 `cannot get property "webServer" without inject` 并被吞掉，导致通道静默缺失、浏览器撞上 405。插件改为把自身作用域作为 owner 传给 `connection.register(owner, channel, handler)`。细节见 [DESIGN](DESIGN.md)；单元测试的替身已复现该守卫，boot 检查是最终防线。
 
-锁文件说明：旧锁把 `@deepseek-ai/dsh-*` 固定在 0.1.2-rc.1，与 0.1.5-rc.1 的 peer 要求冲突，npm 直接增量求解会报 `ERESOLVE`。因此本次只替换锁文件中的 dsh 子树（19 个包条目加根条目），其余条目原样保留，再由 `npm install --package-lock-only` 校验一致性——它接受了该结果且未改动依赖版本。这样 `undici`、`zod`、`rolldown`、`postcss` 等与本次迁移无关的依赖都停留在 0.1.2 时期的版本，没有被动升级。
-
-锁文件中另有两类非人为变更需要知道：一是 npm 对旧锁本身就会做的规范化，会移除 `vitest/node_modules/@esbuild/*` 与 `vitest/node_modules/esbuild`（在未改动的旧锁上执行 `npm install` 同样发生，与本次升级无关）；二是 `use-sync-external-store` 被移除，因为 `dsh-client-ui-renderer` 在 0.1.5-rc.1 已不再依赖它，这是升级的正确结果。
+锁文件说明：本次直接删除旧锁与 `node_modules` 后重新 `npm install`，因为旧的 dsh 子树固定在 0.1.5-rc.2，与 0.1.7-rc.1 的精确 peer 要求冲突，增量求解会报 `ERESOLVE`。重新生成的锁会顺带更新与迁移无关的传递依赖（`undici`、`zod`、`cosmokit` 等）；评审时按 `npm ls` 对照确认没有意外的主版本跃迁。
 
 发布工作流只有在配置了 `NPM_TOKEN` 时才会发布 npm，因此 GitHub Release 成功不等于 npm 包已可安装。发布后核对：
 
 ```sh
-npm view dsh-llm-newapi@0.8.6-rc.3 version
+npm view dsh-llm-newapi@0.8.6-rc.4 version
 npm view dsh-llm-newapi dist-tags --json
 ```
 
-同时检查 Release 的 Pre-release 标记、tarball 内版本和标签提交。只有这些检查完成后，README 才能将 rc.2 从“本地已验证、待发布”改为“已发布”。
+同时检查 Release 的 Pre-release 标记、tarball 内版本和标签提交。只有这些检查完成后，README 才能将 rc.4 从“工作区版本”改为“已发布”。
 
 仓库保留了人工晋升正式版的流程，但它不属于本轮操作。该流程要求 main 与待晋升 RC 指向同一提交，再生成稳定版本提交；如果 main 已有新提交，应重新发布并验证新的 RC，不能跳过必需检查。
 

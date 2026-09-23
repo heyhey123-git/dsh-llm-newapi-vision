@@ -12,7 +12,7 @@ afterEach(cleanup)
 
 const t = (key: keyof typeof en): string => en[key]
 
-/** A wire face answering one resolved llm-newapi section (dsh 0.1.5-rc.1 Remote envelopes). */
+/** A wire face answering one resolved llm-newapi section (dsh 0.1.7-rc.1 Remote envelopes). */
 function wireFace(overrides: Partial<{
   describeAnswer: unknown
   credentialsAnswer: unknown
@@ -218,7 +218,7 @@ describe('models.dev params update', () => {
     render(<NewApiSection api={api as never} t={t} fetchModelParams={paramsFace() as never} />)
 
     await waitFor(() => { expect(screen.getByLabelText(t('proxyToggle'))).toBeTruthy() })
-    // The host (dsh 0.1.5) installs a global proxy dispatcher, so the plugin
+    // The host (dsh 0.1.7) installs a global proxy dispatcher, so the plugin
     // toggle must not be presented as the only network route.
     expect(screen.getByText(t('proxyHint'))).toBeTruthy()
   })

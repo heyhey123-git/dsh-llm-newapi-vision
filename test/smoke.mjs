@@ -3,31 +3,16 @@
  * cordis Contexts (no network), then assert the provider-side surface —
  * route registration, configurable-provider directory entry, chat-only
  * discovery filtering over a stubbed gateway listing, credential resolution
- * through the credentials service only (no environment fallback), and the
- * settings write point refusing sections the adapter cannot serve.
+ * through the credentials service only (no environment fallback), the
+ * settings schema refusing sections the adapter cannot serve, and a volatile
+ * edit reaching the next request without re-applying the plugin.
  */
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { Context, Service } from '@deepseek-ai/cordis'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
 import LlmRuntime, { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
 import * as plugin from '../lib/index.js'
-
-/** In-memory settings provider: the smallest real SettingsProvider subclass. */
-class MemorySettings extends SettingsProvider {
-  doc = {}
-
-  constructor(ctx, options) {
-    super(ctx)
-    this.doc = structuredClone(options?.doc ?? {})
-  }
-
-  get writable() { return true }
-
-  load() { return Promise.resolve(structuredClone(this.doc)) }
-
-  async persist(ns, section) { this.doc[ns] = structuredClone(section) }
-}
 
 /** Minimal credentials service: resolve() only, from an in-memory store. */
 class FakeCredentials extends Service {
@@ -57,7 +42,7 @@ class FakeWebServer extends Service {
 }
 
 /**
- * The 0.1.5 connection service, reproduced faithfully enough to catch a
+ * The 0.1.7 connection service, reproduced faithfully enough to catch a
  * regression. On the real package `rpc.handle` is unusable: its `rpc` getter
  * captures the service's OWN context, which injects no `webServer`, so the
  * inner `owner.webServer.register(route)` throws the cordis guard error and
@@ -191,31 +176,78 @@ function stubModelsListing() {
   assert.equal(asked.auth, 'Bearer stored-key')
 }
 
-// ── Block C: the settings write point refuses unserviceable sections ──
+// ── Block C: the settings schema refuses unserviceable sections ──
 {
+  // The 0.1.7 settings write path validates the plugin's full Config schema
+  // (config-editor.edit → resolveConfig) before persisting, so an
+  // unserviceable value must fail schema validation — not merely runtime
+  // resolution — to be refused instead of stored.
+  const rejectedBase = plugin.Config['~standard'].validate({ baseURL: 'not-a-url' })
+  assert.ok(rejectedBase.issues !== undefined, 'a non-URL baseURL must fail schema validation')
+  assert.ok(rejectedBase.issues.some(issue => issue.message.includes('baseURL must be an absolute http(s) URL')),
+    `the baseURL issue must name the field: ${JSON.stringify(rejectedBase.issues)}`)
+
+  const rejectedProxy = plugin.Config['~standard'].validate({ proxy: { enabled: true, url: 'ftp://x' } })
+  assert.ok(rejectedProxy.issues?.some(issue => issue.message.includes('proxy.url must be an http(s) URL')),
+    `an enabled proxy with a non-http(s) url must fail schema validation: ${JSON.stringify(rejectedProxy.issues)}`)
+
+  const rejectedPatterns = plugin.Config['~standard'].validate({ modelExcludePatterns: [''] })
+  assert.ok(rejectedPatterns.issues?.some(issue => issue.message.includes('modelExcludePatterns entries must be non-empty')),
+    `an empty exclude pattern must fail schema validation: ${JSON.stringify(rejectedPatterns.issues)}`)
+
+  // A serviceable value commits and the very next discovery uses it. The
+  // Loader commits a volatile-only edit into the running references in
+  // place, so this also pins the plugin reading those references per request
+  // rather than snapshotting them at apply time.
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettings, {})
   await ctx.plugin(FakeCredentials, { newapi: 'block-c-key' })
-  await mountPlugin(ctx)
-
-  // A schema-valid but unserviceable baseURL rejects at the write, so it can
-  // never store and silently pin the adapter to the last good facts.
-  await assert.rejects(
-    ctx.settings.update('llm-newapi', { baseURL: 'not-a-url' }),
-    (error) => error.message.includes('baseURL must be an absolute http(s) URL'),
-  )
-
-  // A serviceable section commits and the very next discovery uses it.
-  await ctx.settings.update('llm-newapi', { baseURL: 'http://settings-gw:9000/v1' })
-  const { asked, restore } = stubModelsListing()
+  const fiber = await mountPlugin(ctx, { baseURL: 'http://first-gw:9000/v1' })
+  const first = stubModelsListing()
   try {
-    const found = await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
-    assert.equal(found.length, 2)
+    await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
   } finally {
-    restore()
+    first.restore()
   }
-  assert.equal(asked.url, 'http://settings-gw:9000/v1/models')
+  assert.equal(first.asked.url, 'http://first-gw:9000/v1/models')
+
+  const committed = plugin.Config['~standard'].validate({ baseURL: 'http://second-gw:9001/v1' })
+  assert.equal(committed.issues, undefined)
+  updateVolatile(fiber.config.baseURL, committed.value.baseURL)
+  const second = stubModelsListing()
+  try {
+    await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
+  } finally {
+    second.restore()
+  }
+  assert.equal(second.asked.url, 'http://second-gw:9001/v1/models')
+}
+
+// ── Block C2: the plugin declares its own settings page (no auto-generated one) ──
+{
+  /** Minimal settings service: records the presentation policy registrations. */
+  class FakeSettings extends Service {
+    constructor(ctx) {
+      super(ctx, 'settings')
+      this.policies = []
+    }
+
+    configure(presentation, owner) {
+      this.policies.push({ presentation, owner })
+      return () => {}
+    }
+  }
+
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(FakeSettings)
+  await mountPlugin(ctx)
+  const settings = ctx.get('settings')
+  assert.equal(settings.policies.length, 1, 'exactly one presentation policy must be registered')
+  assert.equal(settings.policies[0].presentation.auto, false,
+    'the plugin ships its own page, so schema-generated pages must be off')
+  assert.equal(settings.policies[0].owner.name, 'llm-newapi',
+    'the policy must name the plugin fiber it belongs to')
 }
 
 // ── Block D: discovery ordering, display names, and the models.dev match ──
@@ -335,13 +367,6 @@ function stubModelsListing() {
   const wired = plugin.serializeRequest({ model: 'qwen3-32b', messages: [], system: undefined, tools: undefined, reasoningEffort: 'high' })
   assert.equal(wired.reasoning_effort, 'high')
   assert.equal('reasoning_effort' in plugin.serializeRequest({ model: 'qwen3-32b', messages: [] }), false)
-
-  // The settings write point refuses an enabled proxy with a non-http(s) url.
-  await ctx.plugin(MemorySettings, {})
-  await assert.rejects(
-    ctx.settings.update('llm-newapi', { proxy: { enabled: true, url: 'ftp://x' } }),
-    (error) => error.message.includes('proxy.url must be an http(s) URL'),
-  )
 }
 
 // ── Block E: the models-dev RPC channel registers once connection starts ──
@@ -357,7 +382,7 @@ function stubModelsListing() {
   await ctx.plugin(FakeConnection, registered)
 
   // The inject scope ran as soon as both services appeared. Loopback-only
-  // exposure is the connection service's own fence in the 0.1.5 line:
+  // exposure is the connection service's own fence on the 0.1.7 line:
   // channel registration no longer carries a per-handle authority option.
   assert.equal(registered.length, 1)
   assert.equal(registered[0].channel, '/llm-newapi')
@@ -548,4 +573,4 @@ function stubModelsListing() {
   }
 }
 
-console.log('smoke: llm-newapi registrations, chat-only discovery, credentials-service key, settings validation, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')
+console.log('smoke: llm-newapi registrations, chat-only discovery, credentials-service key, settings schema validation, volatile-edit propagation, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')

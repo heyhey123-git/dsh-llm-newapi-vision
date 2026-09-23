@@ -8,47 +8,38 @@
 
 | 内容 | 保存方式 |
 | --- | --- |
-| 网关地址、模型列表、models.dev 代理 | dsh 设置的 `llm-newapi` 段 |
+| 网关地址、模型列表、models.dev 代理 | profile 的 Cordis patch 中 `llm-newapi` 插件行的配置（volatile 字段） |
 | API 密钥 | dsh credentials store，固定引用名 `newapi` |
 | 插件启用状态 | web profile 的 `package.json` → `dsh.profile.bundles` |
 
-Web 设置会覆盖插件启动配置中的对应字段，保存后后续请求使用新值；正在进行的请求继续使用启动该请求时的配置。密钥不写入下方 YAML，也不通过 `NEWAPI_API_KEY` 读取。
+Web 设置页写入的就是上述 profile patch 的 volatile 字段：保存后 Loader 会就地更新运行中的配置引用，后续请求使用新值；正在进行的请求继续使用启动该请求时的配置。密钥不写入 YAML，也不通过 `NEWAPI_API_KEY` 读取。
 
 ## 手动配置示例
 
-下面是 **settings.yaml 中的设置段**。编辑自己所用 dsh 实例的设置文件，并保留其他设置段。多数用户使用 Web 设置页即可，无需手动改文件。
-
-```yaml
-llm-newapi:
-  baseURL: https://your-gateway.example/v1
-  models:
-    - id: your-chat-model
-      name: 我的对话模型
-      contextWindow: 128000
-      maxTokens: 8192
-  modelExcludePatterns:
-    - embed
-    - rerank
-    - ranker
-  defaultContextWindow: 128000
-  streamIdleTimeoutMs: 300000
-  proxy:
-    enabled: false
-    url: http://127.0.0.1:7890
-```
-
-请将模型 ID 与容量替换为网关实际值。这里的 `your-chat-model` 仅为示例。
-
-若通过自定义 Cordis 启动配置提供默认值，将上述 `llm-newapi` 下的字段放在插件行的 `config` 中：
+下面是在 **profile 的 `cordis.patch.yml`** 中为插件行提供默认配置。多数用户使用 Web 设置页即可，无需手动改文件；如果同一字段在设置页被修改过，设置页的值优先。
 
 ```yaml
 - id: llm-newapi
   name: dsh-llm-newapi
   config:
     baseURL: https://your-gateway.example/v1
+    models:
+      - id: your-chat-model
+        name: 我的对话模型
+        contextWindow: 128000
+        maxTokens: 8192
+    modelExcludePatterns:
+      - embed
+      - rerank
+      - ranker
+    defaultContextWindow: 128000
+    streamIdleTimeoutMs: 300000
+    proxy:
+      enabled: false
+      url: http://127.0.0.1:7890
 ```
 
-已有 bundle 会插入这条插件行，不要为了填配置再重复加载一次插件。
+请将模型 ID 与容量替换为网关实际值。这里的 `your-chat-model` 仅为示例。已有 bundle 会插入这条插件行，不要为了填配置再重复加载一次插件。
 
 ## 字段速查
 
@@ -101,9 +92,9 @@ defaultReasoningEffort: medium
 | 设置 | 影响范围 |
 | --- | --- |
 | 插件设置页中的代理 | 显式覆盖 models.dev 参数下载，不直接改动网关请求的代理配置 |
-| dsh `0.1.5` 的启动环境代理 | 宿主通过全局 dispatcher 路由普通 fetch，包括网关请求及未指定插件代理的 models.dev 下载 |
+| dsh 的启动环境代理 | 宿主通过 `dsh-http-proxy` 安装全局 dispatcher 路由普通 fetch，包括网关请求及未指定插件代理的 models.dev 下载 |
 
-因此，“关闭插件代理”不等于强制直连。新版宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.5-rc.1/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
+因此，“关闭插件代理”不等于强制直连。新版宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
 
 ## 常见故障
 

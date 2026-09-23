@@ -7,7 +7,7 @@
 # 按 CI 的经验改用镜像源，例如 https://registry.npmmirror.com。
 FROM node:24-bookworm-slim
 
-ARG DSH_VERSION=0.1.5-rc.2
+ARG DSH_VERSION=0.1.7-rc.1
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
 ENV DSH_VERSION=${DSH_VERSION} \
@@ -15,8 +15,15 @@ ENV DSH_VERSION=${DSH_VERSION} \
     DEBIAN_FRONTEND=noninteractive
 
 # curl 供探针使用；ca-certificates 供 HTTPS；git 供 pnpm 解析 git 依赖。
+# 某些受限出口（本机实测）容器内连不上 deb.debian.org，而 apt-get update 对
+# "部分索引失败"仍返回 0，因此以 install 的实际失败触发回退：先按默认源安装，
+# 失败则换 aliyun 镜像重试。默认源可用的环境走与原逻辑一致的路径。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git \
+ || (sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' \
+       /etc/apt/sources.list.d/debian.sources \
+     && apt-get update \
+     && apt-get install -y --no-install-recommends ca-certificates curl git) \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --no-audit --no-fund --registry="${NPM_REGISTRY}" \

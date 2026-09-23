@@ -4,14 +4,16 @@
  * own. Zero dsh modifications — the section slot is `kind: 'list'`, built for
  * feature-owned pages ("adding a setting never means editing the shell").
  *
- * Seam (dsh 0.1.5): the browser half mounts as a plain cordis plugin
+ * Seam (dsh 0.1.7): the browser half mounts as a plain cordis plugin
  * module (`inject` + `apply(ctx)`); there is no dedicated client-runtime
  * package anymore, and `ConnectionHandle.api` is gone. Data access rides the
  * typert Remote namespaces (`ctx.remote.settings` / `.credentials` / `.llm`,
  * assembled by `@deepseek-ai/dsh-api-remotes`) and the plugin's own host RPC
  * channel (`ctx.connection.rpc.call`). The section registers through the
  * settings shell's `settings.section` slot with the locale seat declared, so
- * the renderer supplies the bound `t`.
+ * the renderer supplies the bound `t`. Settings namespaces are profile entry
+ * ids on this line, so the host half's entry must keep the id `llm-newapi`
+ * (the bundle patch does).
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the ctx.slots merge into this program.

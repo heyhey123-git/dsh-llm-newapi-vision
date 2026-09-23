@@ -611,9 +611,9 @@ export class NewApiAdapter extends LlmAdapter {
         ? `: ${error.cause.message}`
         : error instanceof Error ? `: ${error.message}` : ''
       // Without an explicit plugin proxy the request still rides whatever
-      // routing the host installed (dsh 0.1.5 installs a global proxy
-      // dispatcher at startup), so the diagnostic must not claim the direct
-      // route was tried and failed.
+      // routing the host installed (the product CLI mounts dsh-http-proxy,
+      // which installs a global proxy dispatcher at startup), so the
+      // diagnostic must not claim the direct route was tried and failed.
       const remedy = proxyUrl !== undefined
         ? ` — the proxy at ${proxyUrl} is unreachable; check that it is running, or change or disable the proxy setting`
         : ' — check the network path to models.dev, or configure a proxy for this plugin'
