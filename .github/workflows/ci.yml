@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       rc_tag:
-        description: 'Promote a successful pre-release tag to its stable twin on the same commit (e.g. v0.8.2-rc.5 -> v0.8.2). Leave empty to run checks only.'
+        description: 'Promote a successful rc tag to its stable twin on the same commit (e.g. v0.1.7-rc.1-v0.1 -> v0.1.7-v0.1). Leave empty to run checks only.'
         required: false
         type: string
 
@@ -272,16 +272,29 @@ jobs:
       - name: Decide the release channel
         id: channel
         run: |
-          # Every tag in this repository is a pre-release (the host-following
-          # version always carries a `-vN.M` segment). The dist-tag follows
-          # the host line: the 0.1.5 line is the maintained `latest` channel,
-          # newer lines (currently 0.1.7) publish under `next`.
-          echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          if [[ "${GITHUB_REF_NAME}" == v0.1.5-* ]]; then
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
-          else
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
-          fi
+          # Channel rules for the host-following version scheme
+          # (<dsh version>-v<plugin revision>, e.g. v0.1.7-rc.1-v0.1):
+          #  - a stable tag (the dsh segment carries no `-rc.N`) is a full
+          #    release: npm `latest` and a GitHub Release not marked
+          #    pre-release;
+          #  - the 0.1.5 line keeps the `latest` channel while it is the
+          #    maintained line (its dsh host is rc-only, so it never gets a
+          #    stable tag);
+          #  - every other rc line (currently 0.1.7) publishes under `next`.
+          case "${GITHUB_REF_NAME}" in
+            v0.1.5-*)
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+              ;;
+            *-rc.*-v*)
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
       - name: Create GitHub Release with the built tarball
         uses: softprops/action-gh-release@v2
         with:
@@ -306,9 +319,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # Manual confirmation: promote a green pre-release tag to its stable
-  # vX.Y.Z on the same commit. The pushed stable tag then flows through the
-  # ordinary release job as a full release + npm latest.
+  # Manual confirmation: promote a green rc tag to its stable twin on the
+  # same commit. New-scheme example: v0.1.7-rc.1-v0.1 -> v0.1.7-v0.1 (the
+  # host's rc segment is dropped, the plugin revision stays). The stable tag
+  # then flows through the ordinary release job as a full release + npm
+  # `latest`. The twin is a release-only commit on top of the rc commit and
+  # is deliberately NOT pushed to main: main tracks one host line at a time
+  # and a stable twin may belong to an older line.
   promote:
     if: github.event_name == 'workflow_dispatch' && inputs.rc_tag != ''
     runs-on: ubuntu-latest
@@ -326,11 +343,11 @@ jobs:
           RC: ${{ inputs.rc_tag }}
         run: |
           set -euo pipefail
-          if ! [[ "$RC" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+$ ]]; then
-            echo "::error::$RC is not a pre-release tag (expected vX.Y.Z-rc.N or similar)"
+          if ! [[ "$RC" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+-v[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$RC is not a host-following rc tag (expected vX.Y.Z-rc.N-vA.B)"
             exit 1
           fi
-          STABLE="v${RC#v}"; STABLE="${STABLE%%-*}"
+          STABLE="$(sed -E 's/^(v[0-9]+\.[0-9]+\.[0-9]+)-rc\.[0-9]+(-v[0-9]+\.[0-9]+)$/\1\2/' <<<"$RC")"
           SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RC}" --jq '.object.sha')"
           # Annotated tags peel to a tag object, not the commit: dereference
           # once so SHA is the commit the CI run list can match on.
@@ -349,30 +366,31 @@ jobs:
             echo "::error::$STABLE already exists — bump the version instead"
             exit 1
           fi
-          # Promotion may only build directly on the green RC commit. If main
-          # advanced after the RC tag, fail closed instead of publishing an
-          # unverified tree as latest; create and validate a new RC instead.
-          git fetch origin main --no-tags
-          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
-          if [ "$MAIN_SHA" != "$SHA" ]; then
-            echo "::error::main advanced to $MAIN_SHA after $RC ($SHA) — create and validate a new RC"
-            exit 1
-          fi
+          # The twin builds on the exact rc commit whose CI run was verified
+          # above; it is intentionally independent of main (see the job
+          # comment).
           git checkout --detach "$SHA"
           if [ "$(node -p 'require("./package.json").version')" != "${RC#v}" ]; then
             echo "::error::$RC does not match package.json version"
             exit 1
           fi
-          # npm cannot republish the RC tarball as stable because its internal
-          # version already exists. Create the stable-version commit directly
-          # on the verified RC, advance main with a non-forced push, and tag it.
-          npm version "${STABLE#v}" --no-git-tag-version >/dev/null
-          git add package.json package-lock.json 2>/dev/null || git add package.json
+          # npm cannot republish the rc tarball under the stable version, so
+          # create a release-only commit that rewrites the version fields.
+          node -e '
+            const fs = require("node:fs")
+            const version = process.argv[1]
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+            pkg.version = version
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n")
+            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"))
+            lock.version = version
+            lock.packages[""].version = version
+            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n")
+          ' "${STABLE#v}"
+          git add package.json package-lock.json
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -m "$STABLE" >/dev/null
           SHA="$(git rev-parse HEAD)"
-          git push origin "$SHA:refs/heads/main"
-          echo "bumped to $STABLE on main"
           # Local annotated tag on the confirmed commit, then push. A tag
           # pushed with GITHUB_TOKEN does NOT trigger the tags:['v*']
           # workflow (GitHub's recursion guard), so the release run is
@@ -382,17 +400,6 @@ jobs:
           git tag -a "$STABLE" -m "$STABLE (promoted from $RC)" "$SHA"
           git push origin "$STABLE"
           echo "created $STABLE — stable release pipeline starting"
-          # Keep the moving `latest` tag on the newest confirmed stable so
-          # `github:wenzetan/dsh-llm-newapi#latest` stays a valid dynamic
-          # install reference (same semantics as npm's latest dist-tag).
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/latest" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" \
-              -f sha="$SHA" -F force=true >/dev/null
-          else
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/latest" -f sha="$SHA" >/dev/null
-          fi
-          echo "moved latest tag -> $STABLE ($SHA)"
           echo "stable_tag=$STABLE" >> "$GITHUB_OUTPUT"
       - name: Trigger the release run on the stable tag
         env:
