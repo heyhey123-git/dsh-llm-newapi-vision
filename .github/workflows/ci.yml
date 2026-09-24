@@ -237,12 +237,16 @@ jobs:
           ' "$RPC_BODY"
           echo "startup check passed: authenticated web ready, client bundle in boot graph, RPC channel HTTP $rpc"
 
-  # A tag like v0.8.2-rc.1 publishes as a TEST version everywhere: GitHub
+  # A tag like v0.1.7-rc.1-v0.1 (current numbering, host-following) or
+  # v0.8.2-rc.1 (legacy) publishes as a TEST version everywhere: GitHub
   # Release marked pre-release, npm under the `next` dist-tag. The stable
   # `latest` / full release only ever comes from a suffix-free vX.Y.Z tag,
   # and those tags are created exclusively by the promote job below (a
   # manual confirmation step) — pushing one by hand is the process smell the
-  # promotion flow replaces.
+  # promotion flow replaces. Note: under the host-following numbering every
+  # plugin version carries a `-vN.M` prerelease segment, so this promotion
+  # flow does not apply as-is and the stable-version scheme is an open
+  # decision (see docs/development.md).
   release:
     needs: [build, plugin-check, boot]
     if: startsWith(github.ref, 'refs/tags/v')
