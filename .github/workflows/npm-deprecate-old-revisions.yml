@@ -1,0 +1,39 @@
+name: npm deprecate superseded revisions (one-shot)
+
+# 一次性维护：把两条宿主线上被取代的修订（-v0.1、-v0.2）标记为 deprecated，
+# 提示改用各自线的最新修订。unpublish 受 npm 2FA 政策限制无法执行。
+# 执行后删除本文件。
+on:
+  workflow_dispatch:
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Deprecate the superseded revisions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          MSG="Superseded by 0.1.5-rc.3-v0.3 / 0.1.7-rc.1-v0.3 — install the latest revision for your dsh host line (npm view dsh-llm-newapi dist-tags --json)."
+          for v in 0.1.5-rc.3-v0.1 0.1.5-rc.3-v0.2 0.1.7-rc.1-v0.1 0.1.7-rc.1-v0.2; do
+            echo "::group::deprecate $v"
+            npm deprecate "dsh-llm-newapi@$v" "$MSG" || echo "::warning::deprecate failed for $v"
+            echo "::endgroup::"
+          done
+          sleep 5
+          curl -sS "https://registry.npmjs.org/dsh-llm-newapi" | node -e '
+            let s = ""
+            process.stdin.on("data", (d) => { s += d })
+            process.stdin.on("end", () => {
+              const j = JSON.parse(s)
+              for (const [v, meta] of Object.entries(j.versions)) {
+                console.log(v.padEnd(20), meta.deprecated ? "DEPRECATED" : "(active)")
+              }
+              console.log("dist-tags:", JSON.stringify(j["dist-tags"]))
+            })
+          '
