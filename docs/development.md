@@ -17,12 +17,17 @@
 
 新版本号在 semver 上小于旧线的 `0.8.x`，因此发布时必须显式指定 dist-tag，不要依赖 npm 的默认 tag。用户安装用精确版本，例如 `dsh-llm-newapi@0.1.7-rc.1-v0.1`。
 
-### 正式版与 dist-tag 规则
+### 通道与正式版规则
 
-- **rc tag**：`v<dsh 版本>-rc.N-v<插件序号>`（如 `v0.1.7-rc.1-v0.1`）→ npm `next`，GitHub Pre-release。
-- **正式版 tag**：宿主正式版对应的适配，形如 `v0.1.7-v0.1`（去掉宿主段的 `-rc.N`，插件序号不变）→ npm `latest`，GitHub Release 标记为正式（非 Pre-release）。
-- **例外（临时约定）**：`v0.1.5-*` 保持 npm `latest` 通道——该线的宿主版本永远带 rc，不会产生正式版；当 0.1.7 出现正式版后，`latest` 由它接管。
-- 原先「把 `latest` 重认领到最新稳定版」的步骤已删除：它会把 `latest` 指回已被 deprecate 的 `0.8.4`。
+CI 用 `LATEST_LINE`（release job 的一个环境变量）指定当前主推宿主线，当前为 `v0.1.7`：
+
+- **主推线的 rc tag**（如 `v0.1.7-rc.1-v0.3`）→ npm `latest`，GitHub Pre-release；
+- **其他线的 rc tag** → npm `next`，GitHub Pre-release；
+- **正式版 tag**（宿主段无 `-rc.N`，如 `v0.1.7-v0.x`）→ npm `latest`，GitHub Release 标记为正式（非 Pre-release）。
+
+升格或切换主推线时，改 CI 里 `LATEST_LINE` 一行即可。0.1.5 线已冻结（版本固定 `0.1.5-rc.3-v0.3`），不会再有新发布。
+
+原先「把 `latest` 重认领到最新稳定版」的步骤已删除：它会把 `latest` 指回已被 deprecate 的 `0.8.4`。
 
 **晋升流程（`promote` workflow，手动触发）**：输入一个 rc tag（如 `v0.1.7-rc.1-v0.1`），job 会：
 

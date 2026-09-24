@@ -10,10 +10,10 @@
 
 | dsh 宿主 | 插件版本线 | npm 通道 | 状态 |
 | --- | --- | --- | --- |
-| `0.1.5-rc.3` | `0.1.5-rc.3-v0.x` | `latest` | 已发布 |
-| **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.x`** | `next` | **当前开发线** |
+| `0.1.5-rc.3` | `0.1.5-rc.3-v0.3` | — | 已发布，该线已冻结 |
+| **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.x`** | **`latest`** | **当前主推线** |
 
-同一宿主线上的版本号只递增最后一段（`-v0.1` → `-v0.2` → …），因此上表用 `v0.x` 表示该线；查询各通道当前指向的精确版本：
+同一宿主线上的版本号只递增最后一段（`-v0.1` → `-v0.2` → …），因此主推线用 `v0.x` 表示；查询各通道当前指向的精确版本：
 
 ```sh
 npm view dsh-llm-newapi dist-tags --json
@@ -31,36 +31,36 @@ npm view dsh-llm-newapi dist-tags --json
 | 宿主换线（序号重新开始） | `0.1.7-rc.2` | `0.1.7-rc.2-v0.1` | `v0.1.7-rc.2-v0.1` |
 
 - npm 的版本字段不能带前导 `v`，所以包版本写作 `0.1.7-rc.1-v0.1`，而 Git 标签与 GitHub Release 是 `v0.1.7-rc.1-v0.1`。
-- **通道分工**：npm `latest` 指向 0.1.5 线适配（该线宿主恒带 `rc`，不会再出正式版）；npm `next` 指向最新预览。当 0.1.7 出现正式版（`v0.1.7-v0.1`）时，`latest` 由它接管。
+- **通道分工**：npm `latest` 指向当前主推宿主线的版本（现为 0.1.7 线）；`next` 保留给其他线或未来的预览发布。宿主线升格或切换时，改 CI 里的 `LATEST_LINE` 一行即可；0.1.7 出现正式版（`v0.1.7-v0.x`）后同样进入 `latest`。
 - **更早的 `0.8.x` 系列**（对应 dsh `0.1.1-rc.2`、`0.1.2-rc.1` 宿主线）已移除 tag，并在 npm 上标记为 deprecated，不再维护。
 
 ### 兼容性与升级
 
-`0.1.7-rc.1-v0.x` 支持 **dsh `0.1.7-rc.1` 宿主线**，并会明确拒绝 `0.1.5` 宿主并提示升级；`0.1.5-rc.3` 用户使用 `0.1.5-rc.3-v0.x`。兼容性以宿主线而非单个补丁号为准：`0.1.7-rc` 线内的接缝面是固定的，该线后续再切 RC 同样适用——只要导出面一致；`npm run test:host` 会把已安装的导出面与入库快照逐一比对，不一致时直接报错，而不是默认放行。`0.1.7` 更换了设置架构（插件配置由 profile patch 派生并标记为 volatile），因此这不是一次纯依赖升级：详见[适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
+`0.1.7-rc.1-v0.x` 支持 **dsh `0.1.7-rc.1` 宿主线**，并会明确拒绝 `0.1.5` 宿主并提示升级；`0.1.5-rc.3` 用户使用 `0.1.5-rc.3-v0.3`。兼容性以宿主线而非单个补丁号为准：`0.1.7-rc` 线内的接缝面是固定的，该线后续再切 RC 同样适用——只要导出面一致；`npm run test:host` 会把已安装的导出面与入库快照逐一比对，不一致时直接报错，而不是默认放行。`0.1.7` 更换了设置架构（插件配置由 profile patch 派生并标记为 volatile），因此这不是一次纯依赖升级：详见[适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
 
-两个版本线都是 GitHub Pre-release（插件当前没有正式版）。不要假设 dsh 与插件各自的 `latest` 能配套使用——请按上表选择宿主线，并用 `dist-tags` 查询当前精确版本。
+两个版本线都是 GitHub Pre-release（插件当前没有正式版）。dsh 与插件各自的 `latest` 含义不同，不要假设它们能配套——请按上表选择宿主线，并用 `dist-tags` 查询当前精确版本。
 
 ## 安装：使用指定版本
 
 需要 Node.js、npm 和 pnpm；本仓库 CI 使用 Node.js 24。宿主通过 npm 安装，插件从 npm registry 安装到 dsh 的 `web` profile。
 
-### 当前宿主组合（dsh `0.1.7-rc.1`，npm `next`）
+### 当前主推组合（dsh `0.1.7-rc.1`，npm `latest`）
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.7-rc.1
 npm install -g pnpm
-dsh plugin --profile web add --save-exact "dsh-llm-newapi@$(npm view dsh-llm-newapi dist-tags.next)"
+dsh plugin --profile web add --save-exact "dsh-llm-newapi@$(npm view dsh-llm-newapi dist-tags.latest)"
 ```
 
-### 上一个宿主组合（dsh `0.1.5-rc.3`，npm `latest`）
+### 上一个宿主组合（dsh `0.1.5-rc.3`，该线已冻结）
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.5-rc.3
 npm install -g pnpm
-dsh plugin --profile web add --save-exact "dsh-llm-newapi@$(npm view dsh-llm-newapi dist-tags.latest)"
+dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.5-rc.3-v0.3
 ```
 
-选择一组执行即可；命令通过 `dist-tags` 取该通道当前版本，因此不需要手抄版本号。`--save-exact` 将插件依赖记录为精确版本，避免后续依赖更新时自动切换版本。插件安装使用 `dsh plugin`，它会管理对应 profile；单独全局安装 `dsh-llm-newapi` 不会完成这个步骤。
+选择一组执行即可。主推组合通过 `dist-tags` 取当前版本，因此不需要手抄版本号；0.1.5 线已冻结，版本固定为 `0.1.5-rc.3-v0.3`。`--save-exact` 将插件依赖记录为精确版本，避免后续依赖更新时自动切换版本。插件安装使用 `dsh plugin`，它会管理对应 profile；单独全局安装 `dsh-llm-newapi` 不会完成这个步骤。
 
 ### 确认插件已启用
 

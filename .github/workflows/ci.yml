@@ -271,18 +271,20 @@ jobs:
           name: dist
       - name: Decide the release channel
         id: channel
+        env:
+          # The host line currently promoted to npm `latest`. Moving the
+          # promoted line is a one-line change here; every other rc line
+          # publishes under `next`.
+          LATEST_LINE: v0.1.7
         run: |
           # Channel rules for the host-following version scheme
-          # (<dsh version>-v<plugin revision>, e.g. v0.1.7-rc.1-v0.1):
-          #  - a stable tag (the dsh segment carries no `-rc.N`) is a full
-          #    release: npm `latest` and a GitHub Release not marked
-          #    pre-release;
-          #  - the 0.1.5 line keeps the `latest` channel while it is the
-          #    maintained line (its dsh host is rc-only, so it never gets a
-          #    stable tag);
-          #  - every other rc line (currently 0.1.7) publishes under `next`.
+          # (<dsh version>-v<plugin revision>, e.g. v0.1.7-rc.1-v0.3):
+          #  - a tag on the promoted line (LATEST_LINE) → npm `latest`;
+          #  - a stable tag (the dsh segment carries no `-rc.N`) → `latest`
+          #    and a GitHub Release not marked pre-release;
+          #  - every other rc line → `next`.
           case "${GITHUB_REF_NAME}" in
-            v0.1.5-*)
+            "${LATEST_LINE}"-*)
               echo "prerelease=true" >> "$GITHUB_OUTPUT"
               echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
               ;;
