@@ -1,0 +1,64 @@
+name: npm realign (one-shot)
+
+# 一次性维护工作流（执行后删除本文件）：
+# 1) 从 v0.1.5-rc.3-v0.1 指向的提交构建并发布 npm 版本 0.1.5-rc.3-v0.1
+#    （该提交的 package.json 仍写着历史版本号 0.8.6-rc.3，发布时在 CI 内改写）；
+# 2) 删除除两个适配版本外的所有历史版本；
+# 3) 固定 dist-tags：latest=0.1.5-rc.3-v0.1，next=0.1.7-rc.1-v0.1。
+#
+# 之所以放在 CI：npm 写操作需要 NPM_TOKEN，本地环境只有受限的令牌。
+on:
+  workflow_dispatch:
+
+jobs:
+  realign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the 0.1.5 adaptation commit
+        uses: actions/checkout@v4
+        with:
+          ref: v0.1.5-rc.3-v0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Build and publish 0.1.5-rc.3-v0.1
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs")
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+            pkg.version = "0.1.5-rc.3-v0.1"
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n")
+          '
+          npm install --no-audit --no-fund
+          npm run build
+          npm pack
+          if npm view dsh-llm-newapi@0.1.5-rc.3-v0.1 version --silent >/dev/null 2>&1; then
+            echo "0.1.5-rc.3-v0.1 already published — skipping"
+          else
+            npm publish dsh-llm-newapi-0.1.5-rc.3-v0.1.tgz --access public --tag latest
+          fi
+      - name: Drop historical versions and pin dist-tags
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEEP="0.1.5-rc.3-v0.1 0.1.7-rc.1-v0.1"
+          npm dist-tag add dsh-llm-newapi@0.1.5-rc.3-v0.1 latest
+          npm dist-tag add dsh-llm-newapi@0.1.7-rc.1-v0.1 next
+          for v in $(npm view dsh-llm-newapi versions --json | jq -r '.[]'); do
+            keep=false
+            for k in $KEEP; do if [ "$v" = "$k" ]; then keep=true; fi; done
+            if [ "$keep" = false ]; then
+              echo "::group::unpublish $v"
+              npm unpublish "dsh-llm-newapi@$v" --force || echo "::warning::unpublish failed for $v"
+              echo "::endgroup::"
+            fi
+          done
+          echo "=== remaining versions ==="
+          npm view dsh-llm-newapi versions --json
+          echo "=== dist-tags ==="
+          npm dist-tag ls dsh-llm-newapi
