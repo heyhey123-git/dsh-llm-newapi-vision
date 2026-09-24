@@ -8,16 +8,31 @@ Use your NewAPI gateway in [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 **Install the host and plugin as a pair.** Status checked on September 24, 2026.
 
-| dsh host | Plugin | Status |
-| --- | --- | --- |
-| `0.1.5-rc.3` | `0.1.5-rc.3-v0.1` | Published; npm `latest`, GitHub Pre-release |
-| **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.1`** | **Current release**; npm `next`, GitHub Pre-release |
+| dsh host | Plugin | npm channel | Status |
+| --- | --- | --- | --- |
+| `0.1.5-rc.3` | `0.1.5-rc.3-v0.1` | `latest` | Published, GitHub Pre-release |
+| **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.1`** | `next` | **Current release**, GitHub Pre-release |
 
-The plugin version follows the upstream host: `<dsh version>-v<plugin revision>`, so dsh `0.1.5-rc.3` pairs with plugin `0.1.5-rc.3-v0.1` and dsh `0.1.7-rc.1` with `0.1.7-rc.1-v0.1`; later plugin changes on the same host line only bump the last segment (`-v0.2`, `-v0.3`, …). npm forbids a leading `v` in the version field, so the package reads `0.1.5-rc.3-v0.1` while the Git tag and GitHub Release use `v0.1.5-rc.3-v0.1`. The older `0.8.x` series (dsh `0.1.1-rc.2` / `0.1.2-rc.1` host lines) had its tags removed and is marked deprecated on npm; pick a pair from the table above.
+### Version scheme
+
+The plugin version follows the upstream host: `<dsh version>-v<plugin revision>`. Only the last segment is this plugin's own revision:
+
+| Case | dsh version | Plugin version (npm) | Git tag / Release |
+| --- | --- | --- | --- |
+| Upstream RC | `0.1.7-rc.1` | `0.1.7-rc.1-v0.1` | `v0.1.7-rc.1-v0.1` |
+| Later plugin change on the same host line | `0.1.7-rc.1` | `0.1.7-rc.1-v0.2` | `v0.1.7-rc.1-v0.2` |
+| Upstream stable | `0.1.7` | `0.1.7-v0.1` | `v0.1.7-v0.1` |
+| Host line changes (revision restarts) | `0.1.7-rc.2` | `0.1.7-rc.2-v0.1` | `v0.1.7-rc.2-v0.1` |
+
+- npm forbids a leading `v` in the version field, so the package reads `0.1.7-rc.1-v0.1` while the Git tag and GitHub Release use `v0.1.7-rc.1-v0.1`.
+- **Channel split**: npm `latest` points at the 0.1.5-line adaptation (that host line stays rc-only and will never produce a stable tag); npm `next` at the newest preview. When a stable `0.1.7` line appears (`v0.1.7-v0.1`), it takes over `latest`.
+- The older **`0.8.x` series** (dsh `0.1.1-rc.2` / `0.1.2-rc.1` host lines) had its tags removed and is marked deprecated on npm.
+
+### Compatibility and upgrades
 
 Plugin `0.1.7-rc.1-v0.1` supports the **dsh `0.1.7-rc.1` line** and rejects the `0.1.5` host with an explicit upgrade message; `0.1.5-rc.3` users run `0.1.5-rc.3-v0.1`. Compatibility is keyed to the host line rather than one patch: a later `0.1.7-rc` cut is covered as long as its export surface matches — `npm run test:host` compares the installed surface against the checked-in one and fails loudly when it does not, instead of assuming. `0.1.7` replaced the settings architecture (plugin configuration now projects from the profile patch with volatile fields), so this is not a pure dependency bump: see the [compatibility assessment (Chinese)](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md).
 
-Both releases stay on the **pre-release channel** (GitHub Pre-release): npm `latest` points at the 0.1.5-line adaptation, npm `next` at the newest 0.1.7-line adaptation. The host and plugin have separate release channels; their respective `latest` versions are not necessarily compatible.
+Both versions are GitHub Pre-releases (the plugin has no stable release yet). The host and plugin have separate release channels; their respective `latest` versions are not necessarily compatible — pin exact versions from the table above.
 
 ## Install exact versions
 
