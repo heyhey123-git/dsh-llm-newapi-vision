@@ -17,7 +17,9 @@
 
 新版本号在 semver 上小于旧线的 `0.8.x`，因此发布时必须显式指定 dist-tag（CI 的 release job 按「标签含连字符 → `next`」处理），不要依赖 npm 的默认 tag。两个适配版本的通道分工：npm `latest` 指向 0.1.5 线适配，npm `next` 指向最新预览（0.1.7 线）。用户安装用精确版本，例如 `dsh-llm-newapi@0.1.7-rc.1-v0.1`。
 
-两个待约定的边界：其一，新规则下每个版本都带 `-vN.M` prerelease 段，因此现有的「无连字符标签晋升正式版」流程不再适用（`promote` job 找不到匹配的标签），正式版的编号方式与晋升路径需要维护者另行决定；其二，CI 的「Prerelease must not own the latest dist-tag」步骤会在一段预发布发布后把 `latest` 重新指回「最新稳定版」，这与「`latest` 指向 0.1.5 线适配」的约定冲突——在该步骤改为识别本项目的通道约定之前，推送新 tag 后需要人工复核并重设 `latest`。
+待约定的边界：新规则下每个版本都带 `-vN.M` prerelease 段，因此现有的「无连字符标签晋升正式版」流程不再适用（`promote` job 找不到匹配的标签），正式版的编号方式与晋升路径需要维护者另行决定。
+
+CI 的 dist-tag 分配已按本项目的通道约定实现：`v0.1.5-*` 的 tag 发布到 npm `latest`，其余（当前 0.1.7 线）发布到 `next`，所有 tag 都是 Pre-release；原先「把 latest 重认领到最新稳定版」的步骤已删除，因为它会把 `latest` 指回已被 deprecate 的 `0.8.4`。旧线 tag（`v0.1.5-*`）的 `boot` job 也会跳过——CI 固定宿主是 `0.1.7-rc.1`，旧线代码会按版本 guard 拒绝启动，这是预期行为；`build` 与 `plugin-check` 仍然照跑，失败仍会阻断发布。
 
 开发依赖与 CI 的固定宿主都使用 **`0.1.7-rc.1`**，而 peer 下限与运行时最低版本也是 **`0.1.7-rc.1`**。pin 表示我们构建和验证所针对的版本，下限表示插件仍愿意接受的最低版本；同一条宿主线内两者相同，是因为 0.1.7 是设置架构变更后的第一个可用版本，没有更低的同线版本可覆盖。若将来某个补丁版本改变了导出面，`surfaceSharedBy` 不再包含它，门禁会失败——此时应按下文流程处理，而不是直接抬低下限。
 
@@ -103,7 +105,7 @@ npm pack
 
 当前进度：0.1.7 适配已完成并发布为 `0.1.7-rc.1-v0.1`（npm `next`，Release `v0.1.7-rc.1-v0.1`）；0.1.5 线适配以新版本号 `0.1.5-rc.3-v0.1` 重新发布（npm `latest`，Release `v0.1.5-rc.3-v0.1`，构建自 `v0.1.5-rc.3-v0.1` 指向的提交）。testbed 的 L1+L2 已在本机通过。
 
-一条已知的 CI 行为差异：推送 0.1.5 线 tag（`v0.1.5-rc.3-v0.1`）会触发 CI，但 CI 的固定宿主是 `0.1.7-rc.1`，旧线代码会因版本 guard 拒绝启动，`boot` job 因此失败——这是预期结果，不是回归；旧线适配只在本地与 testbed 验证。
+旧线发布说明：0.1.5 线的 tag `v0.1.5-rc.3-v0.1` 指向一个专门的发布提交（基于该线最后的功能提交，仅改写版本号并带上当时的 CI 快照），因此 tag 内的 `package.json` 版本与 npm 上的包一致。推送该 tag 时 CI 的 `boot` job 会跳过（见上文 dist-tag 段落），`build`/`plugin-check`/`release` 仍会运行；npm 上版本已存在时发布步骤自动跳过（rerun-safe）。
 
 关于 RPC 通道的一个坑：0.1.7 宿主线上 `connection.rpc.handle()` 仍不可用，它内部的 effect 会抛 `cannot get property "webServer" without inject` 并被吞掉，导致通道静默缺失、浏览器撞上 405。插件改为把自身作用域作为 owner 传给 `connection.register(owner, channel, handler)`。细节见 [DESIGN](DESIGN.md)；单元测试的替身已复现该守卫，boot 检查是最终防线。
 
