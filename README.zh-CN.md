@@ -10,47 +10,36 @@
 
 | dsh 宿主 | 插件版本 | 状态 |
 | --- | --- | --- |
-| `0.1.1-rc.2` | `0.8.4` | 已发布，插件 npm `latest` |
-| `0.1.2-rc.1` | `0.8.6-rc.1` | 已发布，该宿主线的最后一个版本 |
-| `0.1.5-rc` | `0.8.6-rc.3` | 已发布，该宿主线的最后一个版本 |
+| `0.1.5-rc.3` | `0.1.5-rc.3-v0.1` | 已发布；npm `latest`，GitHub Pre-release |
 | **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.1`** | **当前版本**；npm `next`，GitHub Pre-release |
 
-从 0.1.7 线开始，插件版本号跟随上游宿主：形如 `<dsh 版本>-v<本插件序号>`，例如 dsh `0.1.7-rc.1` 对应插件 `0.1.7-rc.1-v0.1`；同一宿主线上的后续插件改动只递增最后一段（`-v0.2`、`-v0.3`……）。npm 的版本字段不能带前导 `v`，所以包名里写作 `0.1.7-rc.1-v0.1`，Git 标签仍是 `v0.1.7-rc.1-v0.1`。旧版本号（`0.8.x`）只保留在历史发布中，不再新增。
+插件版本号跟随上游宿主：形如 `<dsh 版本>-v<本插件序号>`，例如 dsh `0.1.5-rc.3` 对应插件 `0.1.5-rc.3-v0.1`、dsh `0.1.7-rc.1` 对应 `0.1.7-rc.1-v0.1`；同一宿主线上的后续插件改动只递增最后一段（`-v0.2`、`-v0.3`……）。npm 的版本字段不能带前导 `v`，所以包版本写作 `0.1.5-rc.3-v0.1`，Git 标签与 GitHub Release 用 `v0.1.5-rc.3-v0.1`。更早的 `0.8.x` 系列（对应 dsh `0.1.1-rc.2`、`0.1.2-rc.1` 宿主线）已移除 tag，并在 npm 上标记为 deprecated，请按上表选择配套版本。
 
-`0.1.7-rc.1-v0.1` 支持 **dsh `0.1.7-rc.1` 宿主线**，并会明确拒绝旧的 `0.1.5` 宿主并提示升级；`0.1.5` 用户继续使用插件 `0.8.6-rc.3`，`0.1.2-rc.1` 用户继续使用 `0.8.6-rc.1`。兼容性以宿主线而非单个补丁号为准：`0.1.7-rc` 线内的接缝面是固定的，该线后续再切 RC 同样适用——只要导出面一致；`npm run test:host` 会把已安装的导出面与入库快照逐一比对，不一致时直接报错，而不是默认放行。`0.1.7` 更换了设置架构（插件配置由 profile patch 派生并标记为 volatile），因此这不是一次纯依赖升级：详见[适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
+`0.1.7-rc.1-v0.1` 支持 **dsh `0.1.7-rc.1` 宿主线**，并会明确拒绝 `0.1.5` 宿主并提示升级；`0.1.5-rc.3` 用户使用 `0.1.5-rc.3-v0.1`。兼容性以宿主线而非单个补丁号为准：`0.1.7-rc` 线内的接缝面是固定的，该线后续再切 RC 同样适用——只要导出面一致；`npm run test:host` 会把已安装的导出面与入库快照逐一比对，不一致时直接报错，而不是默认放行。`0.1.7` 更换了设置架构（插件配置由 profile patch 派生并标记为 volatile），因此这不是一次纯依赖升级：详见[适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
 
-版本一律走**预发布通道**：npm `next` 加 GitHub Pre-release。这里不会晋升正式版，也不会移动插件的 `latest`（仍为 `0.8.4`）。不要假设 dsh 与插件各自的 `latest` 能配套使用。
+两个版本都走**预发布通道**（GitHub Pre-release）：npm `latest` 指向 0.1.5 线适配，npm `next` 指向最新的 0.1.7 线适配。不要假设 dsh 与插件各自的 `latest` 能配套使用。
 
 ## 安装：使用指定版本
 
 需要 Node.js、npm 和 pnpm；本仓库 CI 使用 Node.js 24。宿主通过 npm 安装，插件从 npm registry 安装到 dsh 的 `web` profile。
 
-### 已发布的 RC 组合（dsh `0.1.2-rc.1`）
-
-```sh
-npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-npm install -g pnpm
-dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.6-rc.1
-```
-
-### 保留旧宿主的组合
-
-```sh
-npm install -g @deepseek-ai/dsh@0.1.1-rc.2
-npm install -g pnpm
-dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.4
-```
-
-选择一组执行即可。`--save-exact` 将插件依赖记录为精确版本，避免后续依赖更新时自动切换版本。插件安装使用 `dsh plugin`，它会管理对应 profile；单独全局安装 `dsh-llm-newapi` 不会完成这个步骤。
-
 ### 当前宿主组合（dsh `0.1.7-rc.1`）
 
 ```sh
-npm view dsh-llm-newapi@0.1.7-rc.1-v0.1 version
 npm install -g @deepseek-ai/dsh@0.1.7-rc.1
 npm install -g pnpm
 dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.7-rc.1-v0.1
 ```
+
+### 上一个宿主组合（dsh `0.1.5-rc.3`）
+
+```sh
+npm install -g @deepseek-ai/dsh@0.1.5-rc.3
+npm install -g pnpm
+dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.5-rc.3-v0.1
+```
+
+选择一组执行即可。`--save-exact` 将插件依赖记录为精确版本，避免后续依赖更新时自动切换版本。插件安装使用 `dsh plugin`，它会管理对应 profile；单独全局安装 `dsh-llm-newapi` 不会完成这个步骤。
 
 ### 确认插件已启用
 

@@ -10,47 +10,36 @@ Use your NewAPI gateway in [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 | dsh host | Plugin | Status |
 | --- | --- | --- |
-| `0.1.1-rc.2` | `0.8.4` | Published; plugin npm `latest` |
-| `0.1.2-rc.1` | `0.8.6-rc.1` | Published; the last release for that host line |
-| `0.1.5-rc` | `0.8.6-rc.3` | Published; the last release for that host line |
+| `0.1.5-rc.3` | `0.1.5-rc.3-v0.1` | Published; npm `latest`, GitHub Pre-release |
 | **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.1`** | **Current release**; npm `next`, GitHub Pre-release |
 
-Starting with the 0.1.7 line, the plugin version follows the upstream host: `<dsh version>-v<plugin revision>`, so dsh `0.1.7-rc.1` pairs with plugin `0.1.7-rc.1-v0.1`; later plugin changes on the same host line only bump the last segment (`-v0.2`, `-v0.3`, …). npm forbids a leading `v` in the version field, so the package reads `0.1.7-rc.1-v0.1` while the Git tag stays `v0.1.7-rc.1-v0.1`. The old `0.8.x` numbering remains only in historical releases.
+The plugin version follows the upstream host: `<dsh version>-v<plugin revision>`, so dsh `0.1.5-rc.3` pairs with plugin `0.1.5-rc.3-v0.1` and dsh `0.1.7-rc.1` with `0.1.7-rc.1-v0.1`; later plugin changes on the same host line only bump the last segment (`-v0.2`, `-v0.3`, …). npm forbids a leading `v` in the version field, so the package reads `0.1.5-rc.3-v0.1` while the Git tag and GitHub Release use `v0.1.5-rc.3-v0.1`. The older `0.8.x` series (dsh `0.1.1-rc.2` / `0.1.2-rc.1` host lines) had its tags removed and is marked deprecated on npm; pick a pair from the table above.
 
-Plugin `0.1.7-rc.1-v0.1` supports the **dsh `0.1.7-rc.1` line** and rejects the older `0.1.5` host with an explicit upgrade message; `0.1.5` users stay on plugin `0.8.6-rc.3`, and `0.1.2-rc.1` users stay on `0.8.6-rc.1`. Compatibility is keyed to the host line rather than one patch: a later `0.1.7-rc` cut is covered as long as its export surface matches — `npm run test:host` compares the installed surface against the checked-in one and fails loudly when it does not, instead of assuming. `0.1.7` replaced the settings architecture (plugin configuration now projects from the profile patch with volatile fields), so this is not a pure dependency bump: see the [compatibility assessment (Chinese)](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md).
+Plugin `0.1.7-rc.1-v0.1` supports the **dsh `0.1.7-rc.1` line** and rejects the `0.1.5` host with an explicit upgrade message; `0.1.5-rc.3` users run `0.1.5-rc.3-v0.1`. Compatibility is keyed to the host line rather than one patch: a later `0.1.7-rc` cut is covered as long as its export surface matches — `npm run test:host` compares the installed surface against the checked-in one and fails loudly when it does not, instead of assuming. `0.1.7` replaced the settings architecture (plugin configuration now projects from the profile patch with volatile fields), so this is not a pure dependency bump: see the [compatibility assessment (Chinese)](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md).
 
-Releases stay on the **pre-release channel**: npm `next` and a GitHub Pre-release. Nothing here promotes a stable version or moves the plugin's `latest` tag, which stays on `0.8.4`. The host and plugin have separate release channels; their respective `latest` versions are not necessarily compatible.
+Both releases stay on the **pre-release channel** (GitHub Pre-release): npm `latest` points at the 0.1.5-line adaptation, npm `next` at the newest 0.1.7-line adaptation. The host and plugin have separate release channels; their respective `latest` versions are not necessarily compatible.
 
 ## Install exact versions
 
 You need Node.js, npm and pnpm. Repository CI uses Node.js 24. Install the host with npm, then install the plugin from the npm registry into dsh's `web` profile.
 
-### Published RC pair (dsh `0.1.2-rc.1`)
-
-```sh
-npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-npm install -g pnpm
-dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.6-rc.1
-```
-
-### Pair for the older host
-
-```sh
-npm install -g @deepseek-ai/dsh@0.1.1-rc.2
-npm install -g pnpm
-dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.4
-```
-
-Choose one pair. `--save-exact` records an exact plugin dependency so a later dependency update does not switch versions automatically. Use `dsh plugin` to manage the profile; installing `dsh-llm-newapi` globally by itself does not register it there.
-
 ### Current host pair (dsh `0.1.7-rc.1`)
 
 ```sh
-npm view dsh-llm-newapi@0.1.7-rc.1-v0.1 version
 npm install -g @deepseek-ai/dsh@0.1.7-rc.1
 npm install -g pnpm
 dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.7-rc.1-v0.1
 ```
+
+### Previous host pair (dsh `0.1.5-rc.3`)
+
+```sh
+npm install -g @deepseek-ai/dsh@0.1.5-rc.3
+npm install -g pnpm
+dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.5-rc.3-v0.1
+```
+
+Choose one pair. `--save-exact` records an exact plugin dependency so a later dependency update does not switch versions automatically. Use `dsh plugin` to manage the profile; installing `dsh-llm-newapi` globally by itself does not register it there.
 
 ### Check that the plugin is enabled
 

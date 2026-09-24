@@ -2,21 +2,22 @@
 
 [返回 README](../README.zh-CN.md) · [配置指南](configuration.md) · [实现设计](../DESIGN.md)
 
-本文面向维护者。当前包版本为 `0.1.7-rc.1-v0.1`，适配 dsh `0.1.7` 单宿主线。`0.8.6-rc.3` 是 0.1.5 线的最后一个版本；本版随宿主升级重做设置接入（volatile 配置、schema 校验）。本轮保持 RC，不执行正式版晋升。
+本文面向维护者。当前包版本为 `0.1.7-rc.1-v0.1`，适配 dsh `0.1.7` 单宿主线。仓库只保留两条适配线的 tag 与 Release：`v0.1.5-rc.3-v0.1`（npm `latest`）和 `v0.1.7-rc.1-v0.1`（npm `next`）。本版随宿主升级重做设置接入（volatile 配置、schema 校验）。本轮保持 RC，不执行正式版晋升。
 
 ## 版本号规则（0.1.7 线起）
 
-插件版本号跟随上游宿主，格式为 `<dsh 版本>-v<本插件序号>`：
+插件版本号跟随上游宿主，格式为 `<dsh 版本>-v<本插件序号>`，Git 标签与 GitHub Release 是同一个名字加 `v` 前缀（即 `v<插件版本>`）：
 
-- dsh `0.1.7-rc.1` → 插件 `0.1.7-rc.1-v0.1`；
+- dsh `0.1.5-rc.3` → 插件 `0.1.5-rc.3-v0.1`，tag/Release `v0.1.5-rc.3-v0.1`；
+- dsh `0.1.7-rc.1` → 插件 `0.1.7-rc.1-v0.1`，tag/Release `v0.1.7-rc.1-v0.1`；
 - 同一宿主线上的后续插件改动只递增最后一段：`0.1.7-rc.1-v0.2`、`0.1.7-rc.1-v0.3`……；
 - 宿主换线（例如 `0.1.7-rc.2`）时，前面的段跟随新宿主版本，序号重新从 `v0.1` 起；
-- npm 的 `version` 字段不能带前导 `v`，Git 标签写作 `v0.1.7-rc.1-v0.1`；
-- `0.8.x` 是旧规则，只保留在历史发布中，不再新增。
+- npm 的 `version` 字段不能带前导 `v`，所以包版本写作 `0.1.7-rc.1-v0.1`，tag 写作 `v0.1.7-rc.1-v0.1`；
+- `0.8.x` 是旧规则：对应 tag 已从仓库移除，npm 上的历史版本已标记 deprecated，不再新增。
 
-新版本号在 semver 上小于旧线的 `0.8.x`，因此发布时必须显式使用 `--tag next`（CI 的 release job 已按「标签含连字符 → `next`」处理），不要依赖 npm 的默认 tag。用户安装同样用精确版本 `dsh-llm-newapi@0.1.7-rc.1-v0.1`。
+新版本号在 semver 上小于旧线的 `0.8.x`，因此发布时必须显式指定 dist-tag（CI 的 release job 按「标签含连字符 → `next`」处理），不要依赖 npm 的默认 tag。两个适配版本的通道分工：npm `latest` 指向 0.1.5 线适配，npm `next` 指向最新预览（0.1.7 线）。用户安装用精确版本，例如 `dsh-llm-newapi@0.1.7-rc.1-v0.1`。
 
-一个待约定的边界：新规则下每个版本都带 `-vN.M` prerelease 段，因此现有的「无连字符标签晋升正式版」流程不再适用（`promote` job 找不到匹配的标签）。正式版的编号方式与晋升路径需要维护者另行决定；在那之前，插件只发布预发布通道。
+两个待约定的边界：其一，新规则下每个版本都带 `-vN.M` prerelease 段，因此现有的「无连字符标签晋升正式版」流程不再适用（`promote` job 找不到匹配的标签），正式版的编号方式与晋升路径需要维护者另行决定；其二，CI 的「Prerelease must not own the latest dist-tag」步骤会在一段预发布发布后把 `latest` 重新指回「最新稳定版」，这与「`latest` 指向 0.1.5 线适配」的约定冲突——在该步骤改为识别本项目的通道约定之前，推送新 tag 后需要人工复核并重设 `latest`。
 
 开发依赖与 CI 的固定宿主都使用 **`0.1.7-rc.1`**，而 peer 下限与运行时最低版本也是 **`0.1.7-rc.1`**。pin 表示我们构建和验证所针对的版本，下限表示插件仍愿意接受的最低版本；同一条宿主线内两者相同，是因为 0.1.7 是设置架构变更后的第一个可用版本，没有更低的同线版本可覆盖。若将来某个补丁版本改变了导出面，`surfaceSharedBy` 不再包含它，门禁会失败——此时应按下文流程处理，而不是直接抬低下限。
 
@@ -93,15 +94,16 @@ npm pack
 
 | 项目 | 要求 |
 | --- | --- |
-| 包版本与标签 | `0.1.7-rc.1-v0.1` / `v0.1.7-rc.1-v0.1`（规则见上文「版本号规则」） |
-| GitHub Release | Pre-release |
-| npm dist-tag | `next`（显式指定；新版本号在 semver 上低于旧线 `0.8.x`，不能依赖默认 tag） |
-| npm / Git `latest` | 继续保持 `0.8.4` |
-| 已有旧线发布 | 保留原标签和发布包，不覆盖 |
+| 包版本与标签 | 0.1.7 线：`0.1.7-rc.1-v0.1` / `v0.1.7-rc.1-v0.1`；0.1.5 线：`0.1.5-rc.3-v0.1` / `v0.1.5-rc.3-v0.1`（规则见上文「版本号规则」） |
+| GitHub Release | Pre-release，tag 名与 npm 版本一一对应 |
+| npm dist-tag | `latest` → 0.1.5 线适配，`next` → 最新 0.1.7 线适配（显式指定；新版本号在 semver 上低于旧线 `0.8.x`，不能依赖默认 tag） |
+| 历史版本 | tag 已移除；npm 上的 `0.8.x` 系列已标记 deprecated，不再维护 |
 
 完成适配后再更新包版本与锁文件。候选提交必须通过构建、插件规范检查和真实启动检查，并验证浏览器与网关的实际行为。合入 main 后，从已经确认的提交创建 RC 标签；标签工作流负责打包与发布。**本次不要填写 workflow_dispatch 的 `rc_tag` 晋升输入。**
 
-当前进度：0.1.7 适配（设置架构改为 volatile 配置、消息序列化跟随 tool-role 消息）在工作区内完成，版本切为 `0.1.7-rc.1-v0.1`，testbed 的 L1+L2 已在本机通过。`0.8.6-rc.3` 是 0.1.5 线的最后一个版本。
+当前进度：0.1.7 适配已完成并发布为 `0.1.7-rc.1-v0.1`（npm `next`，Release `v0.1.7-rc.1-v0.1`）；0.1.5 线适配以新版本号 `0.1.5-rc.3-v0.1` 重新发布（npm `latest`，Release `v0.1.5-rc.3-v0.1`，构建自 `v0.1.5-rc.3-v0.1` 指向的提交）。testbed 的 L1+L2 已在本机通过。
+
+一条已知的 CI 行为差异：推送 0.1.5 线 tag（`v0.1.5-rc.3-v0.1`）会触发 CI，但 CI 的固定宿主是 `0.1.7-rc.1`，旧线代码会因版本 guard 拒绝启动，`boot` job 因此失败——这是预期结果，不是回归；旧线适配只在本地与 testbed 验证。
 
 关于 RPC 通道的一个坑：0.1.7 宿主线上 `connection.rpc.handle()` 仍不可用，它内部的 effect 会抛 `cannot get property "webServer" without inject` 并被吞掉，导致通道静默缺失、浏览器撞上 405。插件改为把自身作用域作为 owner 传给 `connection.register(owner, channel, handler)`。细节见 [DESIGN](DESIGN.md)；单元测试的替身已复现该守卫，boot 检查是最终防线。
 
@@ -114,16 +116,26 @@ npm view dsh-llm-newapi@0.1.7-rc.1-v0.1 version
 npm view dsh-llm-newapi dist-tags --json
 ```
 
-同时检查 Release 的 Pre-release 标记、tarball 内版本和标签提交。只有这些检查完成后，README 才能把该版本从“当前版本（工作区）”改为“已发布”。
+npm CLI 对刚发布的版本有本地缓存，出现 404 时用 registry 直查确认：
+
+```sh
+curl -sS "https://registry.npmjs.org/dsh-llm-newapi" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log(j['dist-tags'],Object.keys(j.versions).length)})"
+```
+
+同时检查 Release 的 Pre-release 标记、tarball 内版本和标签提交。
+
+一条操作限制：npm 已禁止「绕过 2FA 的 granular access token」执行 unpublish（返回 403 `Granular access tokens that bypass two-factor authentication may not perform this action`），因此历史版本无法用 CI token 删除，改用 `npm deprecate` 标记；只有账号本人在交互式登录（完成 2FA）后才能删除版本。
 
 仓库保留了人工晋升正式版的流程，但它不属于本轮操作。该流程要求 main 与待晋升 RC 指向同一提交，再生成稳定版本提交；如果 main 已有新提交，应重新发布并验证新的 RC，不能跳过必需检查。
 
 ## 其他安装来源
 
-需要复现 GitHub 版本时可指定标签。下例使用当前最新的已发布标签 `v0.8.6-rc.1`；rc.2 目前尚未打标签，因此它的 GitHub 安装方式要等标签创建后才可用：
+需要复现 GitHub 版本时可指定标签，仓库只保留两条适配线的标签：
 
 ```sh
-dsh plugin --profile web add "github:wenzetan/dsh-llm-newapi#v0.8.6-rc.1"
+dsh plugin --profile web add "github:wenzetan/dsh-llm-newapi#v0.1.7-rc.1-v0.1"
+# 或上一个宿主线
+dsh plugin --profile web add "github:wenzetan/dsh-llm-newapi#v0.1.5-rc.3-v0.1"
 ```
 
 也可从对应 [Release](https://github.com/wenzetan/dsh-llm-newapi/releases) 获取 `.tgz`，再用 `dsh plugin --profile web add` 安装下载文件的绝对路径。日常使用优先采用 README 中的 npm 精确版本命令。
