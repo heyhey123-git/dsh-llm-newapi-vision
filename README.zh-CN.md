@@ -1,8 +1,39 @@
-# dsh-llm-newapi
+# dsh-llm-newapi-vision
 
 [English](README.md) | **中文**
 
-在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）中使用你的 NewAPI 网关。插件提供独立的 **NewAPI 设置页**，支持保存密钥、获取模型列表、补充模型参数，以及文本与工具调用的流式响应，无需修改 dsh。
+这是 [`dsh-llm-newapi`](https://github.com/wenzetan/dsh-llm-newapi) 的独立分支，在 NewAPI（OpenAI 兼容）路由上加入**原生图像输入**，基线为宿主 `0.1.7-rc.1`（上游插件修订 `v0.3`）。请与原插件**并存安装**，两者互不冲突。
+
+## 本分支的差异
+
+| 面 | 上游 `dsh-llm-newapi` | 本分支 |
+| --- | --- | --- |
+| 包名 | `dsh-llm-newapi` | `dsh-llm-newapi-vision` |
+| 供应商路由 | `newapi` | `newapi-images` |
+| 设置页 / 命名空间 | `NewAPI` / `llm-newapi` | `NewAPI Vision` / `llm-newapi-vision` |
+| 凭据引用 | `newapi` | `newapi_images` |
+| 模型目录字段 | — | `supportsImageInput: true` 让该行接收原生 `image_url` 输入 |
+| 工具产出的图片 | — | 可选 `toolImageMode: user-followup`：把工具图片以临时用户消息复述给模型查看 |
+
+### 图像相关行为
+
+- **能力按模型行显式声明**：未开启 `supportsImageInput` 的行声明为纯文本输入，宿主会把图片替换成确定性占位文本，不会发送字节；只有开启的行收到原图，且仅 `user` 与 `tool` 消息可以携带。
+- **内联图片受预算约束**：保留的图片以 OpenAI `image_url` base64 形式发送；超出路由预算（100 次出现 / 20 MiB 内联）时请求以 `IMAGE_OFFLOAD_REQUIRED` 失败并说明还需卸载多少张最旧的图片，由宿主决定是否卸载后重试，而不是静默丢图。
+- **强制图片工具并校验完成**：对第一人称祈使式产图请求（新图 → `generate_image`，改已有图 → `edit_image`），首个模型步骤用 `tool_choice` 固定工具；若网关仍返回纯文本，适配器会扣下该回答并以 `IMAGE_TOOL_NOT_CALLED` 失败，而不是发布“已生成”的假成功。疑问、否定、假设与过去式不会触发，且只在首个步骤固定，避免失败工具被无限重试。
+- **工具图片需显式开启**：`toolImageMode: off`（默认）时工具图片只以文本引用形式到达模型；`user-followup` 时会在工具结果之后以临时用户消息复述其字节，持久会话记录不变。
+
+### 兼容边界
+
+本分支要求 dsh `0.1.7-rc.1` 线（`>=0.1.7-rc.1 <0.1.8`）。图像请求预算 API（`IMAGE_OFFLOAD_REQUIRED_CODE`、`projectOffloadedImages`、`requiredImageOffload`）在 `0.1.5` 线上不存在，因此 `0.1.5` 宿主会在模块链接阶段直接抛 `SyntaxError`，而拿不到版本守卫的友好升级提示；`test/host-compat.mjs` 把这一缺口精确固定在这三个符号上。仍在使用 `0.1.5` 宿主时请选择上游 `dsh-llm-newapi@0.1.5-rc.3-v0.3`。
+
+安装本插件时，profile 必须把 `@deepseek-ai/schemastery` 解析到宿主同版本的 `3.18.4`：第三方插件普遍只要求 `^3.18.1`/`>=3.18.2`，未固定时 pnpm 会把 `3.18.2` 提升到 profile 根目录，遮蔽宿主自带副本，任何调用 `.volatile()` 的插件都会在加载时失败。本分支在 profile 的 `pnpm-workspace.yaml` 中固定：
+
+```yaml
+overrides:
+  '@deepseek-ai/schemastery': 3.18.4
+```
+
+在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）中使用你的 NewAPI 网关。插件提供独立的 **NewAPI Vision 设置页**，支持保存密钥、获取模型列表、补充模型参数，以及文本、工具调用与图像输入的流式响应，无需修改 dsh。
 
 ## 先选对版本
 

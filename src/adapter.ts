@@ -33,9 +33,10 @@ import type {
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { fetch as undiciFetch, ProxyAgent } from 'undici'
-import { serializeRequest } from './serialize.ts'
+import { serializeRequestWithImages } from './serialize.ts'
 import { parseSse } from './sse.ts'
 import { translate } from './translate.ts'
 import type {
@@ -49,8 +50,42 @@ import type {
   WireModelList,
 } from './types.ts'
 
+/**
+ * Hold the first forced-image-tool response until its requested call is
+ * verified. Some OpenAI-compatible gateways accept `tool_choice` and then
+ * answer with plain text anyway; publishing that answer would show a
+ * successful image that does not exist. Nothing is released before the
+ * verdict, and the buffer is bounded because the stream is untrusted.
+ * @param stream - translated chunks of one response.
+ * @param required - the tool name this request forced, absent when it forced none.
+ * @returns the same chunks, in order, once the call is verified.
+ * @throws LlmError `IMAGE_TOOL_NOT_CALLED` when the model finished without calling it.
+ */
+export async function* validateRequiredImageTool(
+  stream: AsyncIterable<StreamChunk>, required?: string,
+): AsyncGenerator<StreamChunk> {
+  if (required === undefined) { yield* stream; return }
+  const pending: StreamChunk[] = []
+  let bytes = 0
+  let called = false
+  for await (const chunk of stream) {
+    bytes += JSON.stringify(chunk).length
+    if (bytes > 1_048_576) throw new LlmError('image tool response exceeded validation buffer', 'IMAGE_TOOL_NOT_CALLED')
+    pending.push(chunk)
+    if (chunk.type === 'block-end' && chunk.block.type === 'tool-call'
+      && chunk.block.name === required) called = true
+    if (chunk.type === 'finish') {
+      if ((chunk.reason.kind === 'stop' || chunk.reason.kind === 'tool-calls') && !called) {
+        throw new LlmError(`NewAPI did not call required ${required}; no image was generated`, 'IMAGE_TOOL_NOT_CALLED')
+      }
+      yield* pending
+      return
+    }
+  }
+}
+
 /** Prefix for adapter-raised diagnostics. */
-export const PKG = 'llm-newapi'
+export const PKG = 'llm-newapi-vision'
 
 /**
  * Default case-insensitive id substrings excluding non-chat models from
@@ -84,7 +119,16 @@ export interface NewApiCatalogModel {
    * {@link reasoningEfforts}. Absence defaults to the highest declared rung.
    */
   defaultReasoningEffort?: string
+  /**
+   * Whether this exact gateway route accepts `image_url` parts. Enable only
+   * after testing the route: the capability makes the host keep image blocks
+   * for this route instead of substituting deterministic text for them.
+   */
+  supportsImageInput?: boolean
 }
+
+/** Projection of tool-produced images for a Chat Completions vision request. */
+export type ToolImageMode = 'off' | 'user-followup'
 
 /**
  * Validated connection facts for one operation. The plugin's
@@ -105,6 +149,8 @@ export interface NewApiConnectionOptions {
   apiKeyRef: CredentialRef
   /** Advisory models exposed to discovery consumers; requests remain unrestricted. */
   models: readonly NewApiCatalogModel[]
+  /** Explicit opt-in; only `user-followup` repeats tool images through the verified user-role image format. */
+  toolImageMode?: ToolImageMode
   /**
    * Case-insensitive id substrings excluding discovered models that cannot
    * serve chat completions; the hand-curated {@link models} catalog is never
@@ -131,6 +177,8 @@ export interface NewApiConnectionOptions {
 
 /** Constructor options for {@link NewApiAdapter}: the operation-local resolution hooks the plugin owns. */
 export interface NewApiAdapterOptions {
+  /** Resolve the currently mounted attachment service only when images are requested. */
+  resolveAttachments?: () => AttachmentStore | undefined
   /** Current validated connection facts; called once per operation. */
   options: () => NewApiConnectionOptions
   /**
@@ -298,7 +346,7 @@ function modelInfo(provider: string, model: NewApiCatalogModel): LlmModelInfo {
     id: model.id,
     name: model.name ?? model.id,
     ...model.description === undefined ? {} : { description: model.description },
-    inputModalities: ['text'],
+    inputModalities: model.supportsImageInput === true ? ['text', 'image'] : ['text'],
   }
 }
 
@@ -418,7 +466,7 @@ export class NewApiAdapter extends LlmAdapter {
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
-    return { id: provider, name: 'NewAPI' }
+    return { id: provider, name: 'NewAPI Vision' }
   }
 
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
@@ -438,10 +486,10 @@ export class NewApiAdapter extends LlmAdapter {
     const configured = connection.models.find(entry => entry.id === model)
     const defaultMaxTokens = configured?.maxTokens ?? connection.maxTokens
     return Promise.resolve({
-      // The chat-completions wire route is text-only regardless of catalog
-      // membership, so the uncatalogued fallback declares the same negative
-      // capability — "unknown" here would let the host accept and persist
-      // images the serializer must then reject.
+      // Unknown routes keep declaring the negative capability — "unknown"
+      // here would let the host accept and persist images this route has no
+      // verified projection for. Only an explicitly configured catalog row can
+      // advertise native image input.
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : modelInfo(provider, configured),
@@ -723,7 +771,13 @@ export class NewApiAdapter extends LlmAdapter {
     apiKey: string,
     onComment: () => void,
   ): AsyncIterable<StreamChunk> {
-    const body = serializeRequest(options)
+    const attachments = this.config.resolveAttachments?.()
+    const body = await serializeRequestWithImages(options, {
+      ...attachments === undefined ? {} : { attachments },
+      supportsImageInput: connection.models.some(model => model.id === options.model && model.supportsImageInput === true),
+      toolImageMode: connection.toolImageMode ?? 'off',
+      signal,
+    })
     // Prepared outside the try so the TRANSPORT label below covers exactly the
     // transport boundary, never a serialization failure.
     const payload = JSON.stringify(body)
@@ -781,6 +835,8 @@ export class NewApiAdapter extends LlmAdapter {
       throw new LlmError('NewAPI returned no response body', 'EMPTY_RESPONSE')
     }
 
-    yield* translate(parseSse(response.body, onComment))
+    yield* validateRequiredImageTool(
+      translate(parseSse(response.body, onComment)), body.tool_choice?.function.name,
+    )
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Register a {@link NewApiAdapter} for the `newapi` provider route on
+ * Register a {@link NewApiAdapter} for the `newapi-images` provider route on
  * `ctx.llm`, with connection facts resolved per request instead of frozen at
  * load: the plugin reads its own volatile config references (the profile
  * patch and the web settings page write them through the settings service)
@@ -8,9 +8,9 @@
  * very next request without re-applying the plugin, while an in-flight stream
  * keeps the facts it started with. The one registration-captured fact — the
  * retry policy — re-registers the route in place when it changes. The plugin
- * also serves model discovery for the `llm-newapi` settings namespace by
+ * also serves model discovery for the `llm-newapi-vision` settings namespace by
  * interrogating `GET {baseURL}/models`.
- * @module dsh-llm-newapi
+ * @module dsh-llm-newapi-vision
  */
 
 import type { Context, VolatileSnapshot } from '@deepseek-ai/cordis'
@@ -19,6 +19,7 @@ import { assertUsableApiKey, LlmError, resolveRetryPolicy, RetryPolicySchema } f
 import type { AdapterRegistrationHandle, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import llmManifest from '@deepseek-ai/dsh-llm/package.json' with { type: 'json' }
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 // Type-only: pulls the cordis Context merge that adds the `settings`
 // service (ctx.settings.configure) into this program.
@@ -32,7 +33,7 @@ import {
   normalizeBaseUrl,
   PKG,
 } from './adapter.ts'
-import type { NewApiCatalogModel, NewApiConnectionOptions } from './adapter.ts'
+import type { NewApiCatalogModel, NewApiConnectionOptions, ToolImageMode } from './adapter.ts'
 import type { ModelsDevParamsRequest, ProviderHints } from './types.ts'
 import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 
@@ -47,7 +48,7 @@ export {
   normalizeBaseUrl,
   PKG,
 } from './adapter.ts'
-export { serializeRequest } from './serialize.ts'
+export { imageTaskTool, serializeRequest, serializeRequestWithImages } from './serialize.ts'
 export type { NewApiAdapterOptions, NewApiCatalogModel, NewApiConnectionOptions } from './adapter.ts'
 export type * from './types.ts'
 
@@ -101,7 +102,7 @@ function isSupportedHostVersion(version: string): boolean {
 const hostLlmVersion = typeof llmManifest.version === 'string' ? llmManifest.version : 'unknown'
 if (!isSupportedHostVersion(hostLlmVersion)) {
   throw new Error(
-    `dsh-llm-newapi requires dsh >= ${MINIMUM_DSH_VERSION} ` +
+    `dsh-llm-newapi-vision requires dsh >= ${MINIMUM_DSH_VERSION} ` +
     `(host ships @deepseek-ai/dsh-llm ${hostLlmVersion}); ` +
     `upgrade the host: npm install -g @deepseek-ai/dsh@${MINIMUM_DSH_VERSION}`,
   )
@@ -122,34 +123,34 @@ function deepEqualJson(left: unknown, right: unknown): boolean {
   return keys.every(key => key in rightRecord && deepEqualJson(leftRecord[key], rightRecord[key]))
 }
 
-export const name = 'llm-newapi'
+export const name = 'llm-newapi-vision'
 export const inject = ['llm']
 
-const NS = 'llm-newapi'
+const NS = 'llm-newapi-vision'
 /**
  * Fixed credential reference for the gateway API key. Deliberately not an
  * environment-variable-style name: the inherited process environment is the
- * credentials service's read-only top layer, so an `NEWAPI_API_KEY`-style
+ * credentials service's read-only top layer, so an `NEWAPI_IMAGES_API_KEY`-style
  * ref would let a stray exported variable shadow the web-stored key and lock
- * the settings input read-only. `newapi` names the route, and the web
- * settings page is the one configuration surface for the value.
+ * the settings input read-only. `newapi_images` names this fork's route, and
+ * the web settings page is the one configuration surface for the value.
  */
-const API_KEY_REF = 'newapi'
+const API_KEY_REF = 'newapi_images'
 /** Environment variable naming this provider's endpoint, honored only from trusted layers. */
-const BASE_URL_ENV = 'NEWAPI_BASE_URL'
+const BASE_URL_ENV = 'NEWAPI_IMAGES_BASE_URL'
 /** Placeholder gateway base used when neither config nor environment names one. */
 export const DEFAULT_BASE_URL = 'https://newapi.example.com/v1'
 /** The single provider route this plugin owns. */
-const PROVIDER = 'newapi'
+const PROVIDER = 'newapi-images'
 
 /**
  * Plugin config values, validated by the same-named schemastery schema and
- * doubling as the `llm-newapi` settings-section shape. Every field is
- * optional in yml: `baseURL` falls back to $NEWAPI_BASE_URL from a trusted
+ * doubling as the `llm-newapi-vision` settings-section shape. Every field is
+ * optional in yml: `baseURL` falls back to $NEWAPI_IMAGES_BASE_URL from a trusted
  * environment layer, then the placeholder {@link DEFAULT_BASE_URL} — a
  * request against the placeholder fails as TRANSPORT at first use, naming the
  * endpoint to fix. The API key is not a config value at all: it lives in the
- * credentials store under the fixed reference `newapi` (the web settings
+ * credentials store under the fixed reference `newapi_images` (the web settings
  * page writes it), and a request without any stored key fails with
  * `MISSING_CREDENTIAL`, not at plugin load.
  *
@@ -158,10 +159,17 @@ const PROVIDER = 'newapi'
  * volatile fields are references (see {@link snapshotConfig}).
  */
 export interface NewApiConfig {
-  /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
+  /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_IMAGES_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
   baseURL?: string
   /** Advisory models shown by discovery consumers; defaults to none — a gateway's model set is deployment-specific. */
   models?: NewApiCatalogModel[]
+  /**
+   * Optional request-only projection of tool-produced images: with
+   * `user-followup`, an image a tool returned is repeated to the model as a
+   * transient user-role attachment after its tool result, so a vision route
+   * can inspect tool output. Disabled by default; the durable log is untouched.
+   */
+  toolImageMode?: ToolImageMode
   /**
    * Case-insensitive id substrings excluding discovered models that cannot
    * serve chat completions (embedding, rerank, ranker families). Replaces the
@@ -204,6 +212,7 @@ const catalogModel: z<NewApiCatalogModel> = z.object({
   maxTokens: z.number().step(1).min(1),
   reasoningEfforts: z.array(z.string()),
   defaultReasoningEffort: z.string(),
+  supportsImageInput: z.boolean(),
 })
 
 /** Default forward proxy: the conventional Clash port on loopback. */
@@ -287,6 +296,7 @@ const excludePatternsField = z.transform(
 const configSchema = z.object({
   baseURL: baseURLField.volatile(),
   models: modelsField.volatile(),
+  toolImageMode: z.union(['off', 'user-followup']).default('off').volatile(),
   modelExcludePatterns: excludePatternsField.volatile(),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
   maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
@@ -343,9 +353,11 @@ function snapshotConfig(config: Config): NewApiConfig {
   const maxTokens = plain<number>(config.maxTokens.get())
   const providerHints = plain<ProviderHints>(config.providerHints.get())
   const retryPolicy = plain<RetryPolicyConfig>(config.retryPolicy.get())
+  const toolImageMode = plain<ToolImageMode>(config.toolImageMode.get())
   return {
     ...baseURL === undefined ? {} : { baseURL },
     models: plain<NewApiCatalogModel[]>(config.models.get()) ?? [],
+    ...toolImageMode === undefined ? {} : { toolImageMode },
     modelExcludePatterns:
       plain<string[]>(config.modelExcludePatterns.get()) ?? [...DEFAULT_MODEL_EXCLUDE_PATTERNS],
     defaultContextWindow: plain<number>(config.defaultContextWindow.get()) ?? DEFAULT_CONTEXT_WINDOW,
@@ -397,8 +409,12 @@ function resolveModels(models: readonly NewApiCatalogModel[] | undefined): NewAp
         `${PKG}: catalog model "${model.id}" default reasoning effort "${model.defaultReasoningEffort}" is not among its reasoning efforts`,
       )
     }
+    if (model.supportsImageInput !== undefined && typeof model.supportsImageInput !== 'boolean') {
+      throw new Error(`${PKG}: catalog model "${model.id}" supportsImageInput must be a boolean`)
+    }
     return {
       id: model.id,
+      ...model.supportsImageInput === true ? { supportsImageInput: true } : {},
       ...model.name === undefined ? {} : { name: model.name },
       ...model.description === undefined ? {} : { description: model.description },
       ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
@@ -467,6 +483,7 @@ export function resolveAdapterOptions(config: NewApiConfig, environment?: Return
     baseURL: normalizeBaseUrl(rawBase),
     apiKeyRef: credentialRef(API_KEY_REF),
     models: resolveModels(config.models),
+    ...config.toolImageMode === undefined ? {} : { toolImageMode: config.toolImageMode },
     modelExcludePatterns,
     defaultContextWindow,
     streamIdleTimeoutMs,
@@ -563,11 +580,23 @@ export function apply(ctx: Context, config: Config): void {
     return indexCache.byModel.get(modelId)
   }
 
-  const adapter = new NewApiAdapter({ options, resolveApiKey, officialProviderOf })
+  // Cordis services require injection on the accessing scope: reading
+  // ctx.attachments on this llm-only scope would fail its runtime guard.
+  let attachments: AttachmentStore | undefined
+  ctx.inject(['attachments'], (attachmentCtx) => {
+    attachments = attachmentCtx.attachments
+    attachmentCtx.effect(() => () => {
+      if (attachments === attachmentCtx.attachments) attachments = undefined
+    })
+  })
+  const adapter = new NewApiAdapter({
+    options, resolveApiKey, officialProviderOf,
+    resolveAttachments: () => attachments,
+  })
   ctx.llm.registerConfigurableProviders([
     {
       provider: PROVIDER,
-      displayName: 'NewAPI',
+      displayName: 'NewAPI Vision',
       settingsNs: NS,
       settingsPath: [],
       // The adapter knows this route only because configuration declared it:
@@ -619,12 +648,12 @@ export function apply(ctx: Context, config: Config): void {
     }
     cctx.effect(() => registrar.register(
       cctx,
-      '/llm-newapi',
+      '/llm-newapi-vision',
       (endpoint: string, payload: unknown, signal: AbortSignal) => {
         if (endpoint !== 'models-dev-params') {
           return Promise.resolve({
             ok: false as const,
-            error: { code: 'internal' as const, message: `llm-newapi: unknown endpoint ${endpoint}`, details: {} },
+            error: { code: 'internal' as const, message: `llm-newapi-vision: unknown endpoint ${endpoint}`, details: {} },
           })
         }
         const request = payload as ModelsDevParamsRequest
@@ -643,7 +672,7 @@ export function apply(ctx: Context, config: Config): void {
             },
           }))
       },
-    ), 'llm-newapi: models-dev RPC channel')
+    ), 'llm-newapi-vision: models-dev RPC channel')
   })
 
   // Settings presentation policy (0.1.7 seam): configuration now projects

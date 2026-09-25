@@ -12,7 +12,7 @@
  * channel (`ctx.connection.rpc.call`). The section registers through the
  * settings shell's `settings.section` slot with the locale seat declared, so
  * the renderer supplies the bound `t`. Settings namespaces are profile entry
- * ids on this line, so the host half's entry must keep the id `llm-newapi`
+ * ids on this line, so the host half's entry must keep the id `llm-newapi-vision`
  * (the bundle patch does).
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
@@ -31,7 +31,7 @@ import { en, zh } from './locale.ts'
 import type { ModelsDevParamsRequest, ModelsDevParamsResponse } from './params-types.ts'
 
 /** Copy namespace owned by this plugin. */
-const NS = 'settings.newapi'
+const NS = 'settings.newapiVision'
 
 /**
  * Section styles. The browser bundle is one JS file (the module loader serves
@@ -189,11 +189,11 @@ export const inject = [
 ]
 
 /**
- * Register the NewAPI settings section.
+ * Register the NewAPI Vision settings section.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'llm-newapi: copy dictionaries')
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'llm-newapi-vision: copy dictionaries')
 
   // Fiber-scoped styles: removed with the plugin, so a reload swaps them cleanly.
   if (typeof document !== 'undefined') {
@@ -202,7 +202,7 @@ export function apply(ctx: ClientContext): void {
       element.textContent = SECTION_CSS
       document.head.append(element)
       return () => { element.remove() }
-    }, 'llm-newapi: section styles')
+    }, 'llm-newapi-vision: section styles')
   }
 
   const connection = ctx.get('connection') as ConnectionHandle
@@ -212,13 +212,13 @@ export function apply(ctx: ClientContext): void {
   // the gateway model ids (and the proxy draft) and the host downloads
   // https://models.dev/api.json — no cross-origin fetch in the browser.
   const fetchModelParams = (request: ModelsDevParamsRequest) =>
-    connection.rpc.call('/llm-newapi', 'models-dev-params', request) as Promise<
+    connection.rpc.call('/llm-newapi-vision', 'models-dev-params', request) as Promise<
       { ok: true; value: ModelsDevParamsResponse } | { ok: false; error: { message: string } }
     >
 
   // The section's data face over the typert Remote namespaces: reads and
-  // writes the llm-newapi settings section, the fixed credential reference,
-  // and the gateway model interrogation for this namespace.
+  // writes the llm-newapi-vision settings section, the fixed credential
+  // reference, and the gateway model interrogation for this namespace.
   const injected = (): NewApiSectionInjected => ({
     fetchModelParams,
     api: {
@@ -233,7 +233,7 @@ export function apply(ctx: ClientContext): void {
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
-    id: 'newapi',
+    id: 'newapi-vision',
     order: 15,
     label: () => t('nav'),
     locale: NS,

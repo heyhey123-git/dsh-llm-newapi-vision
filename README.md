@@ -1,8 +1,34 @@
-# dsh-llm-newapi
+# dsh-llm-newapi-vision
 
 **English** | [中文](README.zh-CN.md)
 
-Use your NewAPI gateway in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). The plugin adds a **NewAPI settings page** for credentials, model discovery and model parameters, plus streaming text and tool calls. It requires no changes to dsh.
+An independent fork of [`dsh-llm-newapi`](https://github.com/wenzetan/dsh-llm-newapi) that adds **native image input** to the NewAPI (OpenAI-compatible) route, based on host line `0.1.7-rc.1` (upstream plugin revision `v0.3`). Install it **alongside** the original plugin; the two do not collide.
+
+## What the fork changes
+
+| Surface | Upstream `dsh-llm-newapi` | This fork |
+| --- | --- | --- |
+| Package | `dsh-llm-newapi` | `dsh-llm-newapi-vision` |
+| Provider route | `newapi` | `newapi-images` |
+| Settings page / namespace | `NewAPI` / `llm-newapi` | `NewAPI Vision` / `llm-newapi-vision` |
+| Credential reference | `newapi` | `newapi_images` |
+| Model catalog field | — | `supportsImageInput: true` opts one catalog row into native `image_url` input |
+| Tool-produced images | — | optional `toolImageMode: user-followup` repeats them as a transient user-role attachment for visual inspection |
+
+The fork shares the original's design, tests and documentation; everything below describes behavior common to both unless it names the image path.
+
+### Image-specific notes
+
+- **Capability is per catalog row and explicit.** A row without `supportsImageInput: true` declares `inputModalities: ['text']`, so the host substitutes deterministic placeholder text for any image instead of sending bytes. Only a row that opts in receives real images, and only `user` and `tool` messages may carry them.
+- **Budgeted inline images.** Retained images ride as OpenAI `image_url` base64 data URIs. A request beyond the route budget (100 occurrences / 20 MiB inline) fails with `IMAGE_OFFLOAD_REQUIRED` naming how many of the oldest occurrences the host must permanently offload before retrying, instead of silently dropping pixels.
+- **Forced image tool with verified completion.** On a first-person imperative image request (new image → `generate_image`, change the attached image → `edit_image`), the first model step pins `tool_choice` to that tool. If the gateway answers with prose anyway, the adapter withholds the answer and fails with `IMAGE_TOOL_NOT_CALLED` rather than publishing a success claim for an image that was never produced. Questions, negated, hypothetical and past-tense phrasing never trigger it, and the choice is released after the first step so a failing tool is not retried in a loop.
+- **Tool images are opt-in.** With `toolImageMode: off` (default) a tool image reaches the model only as a text reference. With `user-followup`, its bytes are repeated to the model as a transient user message after the tool result; the durable conversation is not rewritten.
+
+### Compatibility boundary
+
+This fork requires the dsh `0.1.7-rc.1` line (`>=0.1.7-rc.1 <0.1.8`). Because the image request-budget API (`IMAGE_OFFLOAD_REQUIRED_CODE`, `projectOffloadedImages`, `requiredImageOffload`) does not exist on the `0.1.5` line, a `0.1.5` host fails at module link with a raw `SyntaxError` rather than the version guard's friendly upgrade message; `test/host-compat.mjs` pins that gap to exactly those three symbols. Use upstream `dsh-llm-newapi@0.1.5-rc.3-v0.3` if you are still on the `0.1.5` host line.
+
+Use your NewAPI gateway in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). The plugin adds a **NewAPI Vision settings page** for credentials, model discovery and model parameters, plus streaming text, tool calls and image input. It requires no changes to dsh.
 
 ## Choose a compatible version
 
@@ -105,7 +131,9 @@ Model discovery queries your gateway for available models. models.dev is a publi
 | Feature | Behavior |
 | --- | --- |
 | Text, reasoning content and tool calls | Streaming supported; an explicit reasoning effort is sent as `reasoning_effort` |
-| Image input | The adapter currently declares text-only input |
+| Image input | Real images are sent as `image_url` parts **only** for catalog rows with `supportsImageInput: true`; every other row (and every uncatalogued id) declares text-only input, so the host substitutes placeholder text. Retained images are budgeted inline; an over-budget request asks the host to offload older occurrences first |
+| Tool-produced images | Off by default (text reference only); `toolImageMode: user-followup` repeats them to the model as a transient user-role attachment. The durable conversation is never rewritten |
+| Image tool completion | An explicit image request pins `tool_choice` for one step and refuses a text-only answer with `IMAGE_TOOL_NOT_CALLED` — the model cannot claim an image it never made |
 | Model discovery | Queries `/models` and filters names containing `embed`, `rerank` or `ranker`; this is not a capability probe |
 | Model parameters | Edit manually or match against models.dev; verify against your gateway |
 | API key | Saved through settings, never echoed; a blank input preserves the stored key |

@@ -9,7 +9,7 @@
  */
 import { build } from 'esbuild'
 
-const ID = 'dsh-llm-newapi'
+const ID = 'dsh-llm-newapi-vision'
 
 /**
  * Loader module-table specifiers: everything the bundle requires instead of

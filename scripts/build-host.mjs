@@ -19,7 +19,7 @@ await build({
   packages: 'external',
 })
 
-console.log('dsh-llm-newapi: wrote lib/index.js')
+console.log('dsh-llm-newapi-vision: wrote lib/index.js')
 
 // The sources import siblings with explicit `.ts` extensions
 // (allowImportingTsExtensions), and rewriteRelativeImportExtensions does not
@@ -36,6 +36,6 @@ for (const name of await readdir(TYPES_DIR)) {
   const rewritten = source.replace(SPECIFIER, "$1'$2.js'")
   if (rewritten !== source) {
     await writeFile(file, rewritten)
-    console.log(`dsh-llm-newapi: rewrote .ts specifiers in ${file}`)
+    console.log(`dsh-llm-newapi-vision: rewrote .ts specifiers in ${file}`)
   }
 }

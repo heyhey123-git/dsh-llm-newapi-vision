@@ -234,25 +234,31 @@ function namedImportsFrom(source, specifier) {
   console.log(`host-compat: snapshot matches the installed published dsh-llm ${installedVersion} (surface shared by ${snapshot.surfaceSharedBy.join(', ')})`)
 }
 
-// ── Block E (always, offline): the entry still links on the REJECTED host line ──
-// The friendly "upgrade the host" message comes from the entry's own version
-// guard, which only runs after the module graph links. If a 0.1.7-only symbol
-// ever enters the entry's static imports, a real 0.1.5 host gets a raw
-// `SyntaxError: does not provide an export named …` instead — exactly the
-// failure mode this repository exists to avoid. Blocks B and C cannot catch
-// that: both build their stub from the 0.1.7 surface.
+// ── Block E (always, offline): the 0.1.5-only gap stays exactly the vision API ──
+// This fork's image support is built on the image request-budget API that the
+// 0.1.7 host line introduced, so a real 0.1.5 host dies at ESM link time with a
+// raw `SyntaxError: does not provide an export named …` rather than reaching the
+// version guard's upgrade message. That is a deliberate, documented boundary —
+// the plugin declares `>=0.1.7-rc.1 <0.1.8` — so this block pins the gap to the
+// exact vision symbols instead of pretending it away: any 0.1.7-only symbol
+// beyond them is an accidental import and still fails the check.
 {
   const built = readFileSync(BUILT_ENTRY, 'utf8')
   const imported = namedImportsFrom(built, '@deepseek-ai/dsh-llm')
   assert.ok(imported.size > 0, 'no @deepseek-ai/dsh-llm named imports found in lib/index.js — block would pass vacuously')
 
+  const VISION_ONLY = ['IMAGE_OFFLOAD_REQUIRED_CODE', 'projectOffloadedImages', 'requiredImageOffload']
   const rejected = JSON.parse(readFileSync(REJECTED_SNAPSHOT_PATH, 'utf8'))
   const rejectedLabel = rejected.capturedFrom ?? rejected.version
   const rejectedSurface = new Set(rejected.exports)
   const missing = [...imported.keys()].filter(symbol => !rejectedSurface.has(symbol)).sort()
-  assert.deepEqual(missing, [],
-    `lib/index.js imports ${missing.join(', ')}, absent from the rejected ${rejectedLabel} host surface — such a host would die at ESM link time with a raw SyntaxError instead of the version guard's upgrade message. Either avoid the import, or drop the promise that ${rejectedLabel} is rejected cleanly (README + Block C).`)
-  console.log(`host-compat: entry still links on the rejected ${rejectedLabel} surface (${rejectedSurface.size} exports)`)
+  assert.deepEqual(missing, [...VISION_ONLY].sort(),
+    `lib/index.js must reach the ${rejectedLabel} surface through the documented vision symbols only (${VISION_ONLY.join(', ')}); got ${missing.join(', ') || 'none'}`)
+  for (const symbol of VISION_ONLY) {
+    assert.ok(imported.has(symbol),
+      `the vision fork is expected to import ${symbol} from @deepseek-ai/dsh-llm — if the image path stopped using it, update this list and the README compatibility note`)
+  }
+  console.log(`host-compat: entry imports only the documented 0.1.7-only vision symbols beyond the ${rejectedLabel} surface (${VISION_ONLY.join(', ')})`)
 }
 
 console.log('host-compat: export gate + host-surface link fixture OK')

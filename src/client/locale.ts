@@ -1,22 +1,22 @@
 /**
- * Copy dictionaries for the NewAPI settings section. Product copy is Chinese
+ * Copy dictionaries for the NewAPI Vision settings section. Product copy is Chinese
  * first (the dsh web convention); English mirrors it.
  */
 
 // Type-only: pulls the shell's LocaleNamespaceMap so the merge below (and
-// every PropsLocale seat typing `t` over `settings.newapi`) resolves.
+// every PropsLocale seat typing `t` over `settings.newapiVision`) resolves.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
-    /** The NewAPI settings section copy. */
-    'settings.newapi': NewApiKey
+    /** The NewAPI Vision settings section copy. */
+    'settings.newapiVision': NewApiKey
   }
 }
 
 export const zh = {
-  nav: 'NewAPI',
-  intro: '配置 NewAPI 网关：API 密钥、网关地址与模型列表。模型发现只列出支持 chat 接口的模型。',
+  nav: 'NewAPI Vision',
+  intro: '配置 NewAPI 网关的图像输入：API 密钥、网关地址与模型列表。只有标记「支持图像输入」的模型才会收到原图，其余模型收到的仍是占位文本。',
   keyInput: 'API 密钥',
   keyPlaceholder: '粘贴令牌；留空保持已存密钥不变',
   keyStored: '已配置（不回显）',
@@ -35,6 +35,10 @@ export const zh = {
   contextWindow: '上下文窗口',
   maxTokens: '输出上限',
   modelReasoning: '思考等级',
+  modelVision: '支持图像输入',
+  modelVisionHint: '仅在此网关的该模型已实测支持图片时开启；模型发现不会自动确认此能力。',
+  toolImageReview: '让模型查看工具产出的图片',
+  toolImageReviewHint: '开启后，工具返回的图片会在该工具结果之后、以一条临时用户消息的形式发给视觉模型查看；原始会话记录不变，非视觉模型不受影响。',
   defaultEffort: '预设思考等级（切换模式时自动选择）',
   modelIdRequired: '模型 ID 不能为空',
   modelIdDuplicate: '模型 ID 重复',
@@ -64,17 +68,17 @@ export const zh = {
   applying: '正在保存…',
   saved: '已保存。',
   loadFailed: '加载失败',
-  nsNotRegistered: 'llm-newapi: 设置命名空间未注册（插件行是否已加载？）',
+  nsNotRegistered: 'llm-newapi-vision: 设置命名空间未注册（插件行是否已加载？）',
   retry: '重试',
   readOnly: '当前设置源只读，无法保存。',
-  modelHint: '默认只列出 /chat/completions 接口支持的模型；不支持该接口的模型请手动添加。该配置可在 settings.yaml 的 llm-newapi: 段用 modelExcludePatterns 调整。',
+  modelHint: '默认只列出 /chat/completions 接口支持的模型；不支持该接口的模型请手动添加。该配置可在 profile 的 cordis.patch.yml 中 llm-newapi-vision 行用 modelExcludePatterns 调整。',
 } as const
 
 export type NewApiKey = keyof typeof zh
 
 export const en: Record<NewApiKey, string> = {
-  nav: 'NewAPI',
-  intro: 'Configure the NewAPI gateway: API key, gateway base URL, and model list. Discovery lists chat-capable models only.',
+  nav: 'NewAPI Vision',
+  intro: 'Configure the NewAPI gateway for image input: API key, gateway base URL, and model list. Only models marked as accepting image input receive real images; every other model still sees placeholder text.',
   keyInput: 'API key',
   keyPlaceholder: 'Paste the token; leave blank to keep the stored key',
   keyStored: 'Configured (never echoed)',
@@ -93,6 +97,10 @@ export const en: Record<NewApiKey, string> = {
   contextWindow: 'Context window',
   maxTokens: 'Max output tokens',
   modelReasoning: 'Reasoning efforts',
+  modelVision: 'Image input',
+  modelVisionHint: 'Enable only after testing images on this exact gateway model. Discovery cannot verify this capability.',
+  toolImageReview: 'Let the model view tool-generated images',
+  toolImageReviewHint: 'When enabled, an image a tool returned is sent to the vision model as a transient user message after that tool result. The durable conversation is untouched, and non-vision models are unaffected.',
   defaultEffort: 'Default reasoning effort (auto-selected on mode switch)',
   modelIdRequired: 'Model id is required',
   modelIdDuplicate: 'Duplicate model id',
@@ -122,8 +130,8 @@ export const en: Record<NewApiKey, string> = {
   applying: 'Saving…',
   saved: 'Saved.',
   loadFailed: 'Load failed',
-  nsNotRegistered: 'llm-newapi: the settings namespace is not registered (is the plugin row loaded?)',
+  nsNotRegistered: 'llm-newapi-vision: the settings namespace is not registered (is the plugin row loaded?)',
   retry: 'Retry',
   readOnly: 'The active settings source is read-only; nothing can be saved.',
-  modelHint: 'By default only models supported by the /chat/completions endpoint are listed; models without that support must be added manually. Tune modelExcludePatterns in the llm-newapi: settings section.',
+  modelHint: 'By default only models supported by the /chat/completions endpoint are listed; models without that support must be added manually. Tune modelExcludePatterns on the llm-newapi-vision row of the profile cordis.patch.yml.',
 }

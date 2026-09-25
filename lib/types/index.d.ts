@@ -1,5 +1,5 @@
 /**
- * Register a {@link NewApiAdapter} for the `newapi` provider route on
+ * Register a {@link NewApiAdapter} for the `newapi-images` provider route on
  * `ctx.llm`, with connection facts resolved per request instead of frozen at
  * load: the plugin reads its own volatile config references (the profile
  * patch and the web settings page write them through the settings service)
@@ -8,32 +8,32 @@
  * very next request without re-applying the plugin, while an in-flight stream
  * keeps the facts it started with. The one registration-captured fact — the
  * retry policy — re-registers the route in place when it changes. The plugin
- * also serves model discovery for the `llm-newapi` settings namespace by
+ * also serves model discovery for the `llm-newapi-vision` settings namespace by
  * interrogating `GET {baseURL}/models`.
- * @module dsh-llm-newapi
+ * @module dsh-llm-newapi-vision
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment';
-import type { NewApiCatalogModel, NewApiConnectionOptions } from './adapter.js';
+import type { NewApiCatalogModel, NewApiConnectionOptions, ToolImageMode } from './adapter.js';
 import type { ProviderHints } from './types.js';
 export { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODEL_EXCLUDE_PATTERNS, DEFAULT_PROVIDER_HINTS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, matchModelsDev, modelNameFromId, NewApiAdapter, normalizeBaseUrl, PKG, } from './adapter.js';
-export { serializeRequest } from './serialize.js';
+export { imageTaskTool, serializeRequest, serializeRequestWithImages } from './serialize.js';
 export type { NewApiAdapterOptions, NewApiCatalogModel, NewApiConnectionOptions } from './adapter.js';
 export type * from './types.js';
-export declare const name = "llm-newapi";
+export declare const name = "llm-newapi-vision";
 export declare const inject: string[];
 /** Placeholder gateway base used when neither config nor environment names one. */
 export declare const DEFAULT_BASE_URL = "https://newapi.example.com/v1";
 /**
  * Plugin config values, validated by the same-named schemastery schema and
- * doubling as the `llm-newapi` settings-section shape. Every field is
- * optional in yml: `baseURL` falls back to $NEWAPI_BASE_URL from a trusted
+ * doubling as the `llm-newapi-vision` settings-section shape. Every field is
+ * optional in yml: `baseURL` falls back to $NEWAPI_IMAGES_BASE_URL from a trusted
  * environment layer, then the placeholder {@link DEFAULT_BASE_URL} — a
  * request against the placeholder fails as TRANSPORT at first use, naming the
  * endpoint to fix. The API key is not a config value at all: it lives in the
- * credentials store under the fixed reference `newapi` (the web settings
+ * credentials store under the fixed reference `newapi_images` (the web settings
  * page writes it), and a request without any stored key fails with
  * `MISSING_CREDENTIAL`, not at plugin load.
  *
@@ -42,10 +42,17 @@ export declare const DEFAULT_BASE_URL = "https://newapi.example.com/v1";
  * volatile fields are references (see {@link snapshotConfig}).
  */
 export interface NewApiConfig {
-    /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
+    /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_IMAGES_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
     baseURL?: string;
     /** Advisory models shown by discovery consumers; defaults to none — a gateway's model set is deployment-specific. */
     models?: NewApiCatalogModel[];
+    /**
+     * Optional request-only projection of tool-produced images: with
+     * `user-followup`, an image a tool returned is repeated to the model as a
+     * transient user-role attachment after its tool result, so a vision route
+     * can inspect tool output. Disabled by default; the durable log is untouched.
+     */
+    toolImageMode?: ToolImageMode;
     /**
      * Case-insensitive id substrings excluding discovered models that cannot
      * serve chat completions (embedding, rerank, ranker families). Replaces the
@@ -83,6 +90,7 @@ export declare const DEFAULT_PROXY_URL = "http://127.0.0.1:7890";
 declare const configSchema: z<Schemastery.ObjectS<NoInfer<{
     baseURL: z<string, string, "volatile">;
     models: z<NoInfer<NewApiCatalogModel[]>, NoInfer<NewApiCatalogModel[]>, "volatile">;
+    toolImageMode: z<"off" | "user-followup", "off" | "user-followup", "volatile-defined">;
     modelExcludePatterns: z<NoInfer<string[]>, NoInfer<string[]>, "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
     maxTokens: z<number, number, "volatile">;
@@ -102,6 +110,7 @@ declare const configSchema: z<Schemastery.ObjectS<NoInfer<{
 }>>, Schemastery.ObjectT<NoInfer<{
     baseURL: z<string, string, "volatile">;
     models: z<NoInfer<NewApiCatalogModel[]>, NoInfer<NewApiCatalogModel[]>, "volatile">;
+    toolImageMode: z<"off" | "user-followup", "off" | "user-followup", "volatile-defined">;
     modelExcludePatterns: z<NoInfer<string[]>, NoInfer<string[]>, "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
     maxTokens: z<number, number, "volatile">;
@@ -131,6 +140,7 @@ declare const configSchema: z<Schemastery.ObjectS<NoInfer<{
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     baseURL: z<string, string, "volatile">;
     models: z<NoInfer<NewApiCatalogModel[]>, NoInfer<NewApiCatalogModel[]>, "volatile">;
+    toolImageMode: z<"off" | "user-followup", "off" | "user-followup", "volatile-defined">;
     modelExcludePatterns: z<NoInfer<string[]>, NoInfer<string[]>, "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
     maxTokens: z<number, number, "volatile">;
@@ -150,6 +160,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, Schemastery.ObjectT<NoInfer<{
     baseURL: z<string, string, "volatile">;
     models: z<NoInfer<NewApiCatalogModel[]>, NoInfer<NewApiCatalogModel[]>, "volatile">;
+    toolImageMode: z<"off" | "user-followup", "off" | "user-followup", "volatile-defined">;
     modelExcludePatterns: z<NoInfer<string[]>, NoInfer<string[]>, "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
     maxTokens: z<number, number, "volatile">;

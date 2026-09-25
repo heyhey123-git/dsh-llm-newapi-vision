@@ -14,6 +14,12 @@ export interface WireRequest {
   stream: true
   stream_options: { include_usage: true }
   tools?: WireTool[]
+  /**
+   * Force one named tool on a narrowly identified image task. Emitted only for
+   * the first model step after a human image request, so a gateway that
+   * silently ignores it is caught by the adapter before any answer is published.
+   */
+  tool_choice?: { type: 'function'; function: { name: string } }
   temperature?: number
   max_tokens?: number
   /**
@@ -29,10 +35,15 @@ export interface WireSystemMessage {
   content: string
 }
 
-/** User-role message: a single string of user input. */
+/** One part of a multimodal user message: text, or a verified inline image. */
+export type WireUserPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+/** User-role message: plain text, or content parts when a verified image rides along. */
 export interface WireUserMessage {
   role: 'user'
-  content: string
+  content: string | WireUserPart[]
 }
 
 /** Tool-role message: the result of one tool call, keyed by its call id. */

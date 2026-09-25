@@ -12,9 +12,22 @@
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, LlmDiscoveredModel, LlmModelDiscoveryRequest, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type { ModelsDevApi, ModelsDevMatch, ModelsDevParamsRequest, ModelsDevParamsResponse, ProviderHints, WireError } from './types.js';
+/**
+ * Hold the first forced-image-tool response until its requested call is
+ * verified. Some OpenAI-compatible gateways accept `tool_choice` and then
+ * answer with plain text anyway; publishing that answer would show a
+ * successful image that does not exist. Nothing is released before the
+ * verdict, and the buffer is bounded because the stream is untrusted.
+ * @param stream - translated chunks of one response.
+ * @param required - the tool name this request forced, absent when it forced none.
+ * @returns the same chunks, in order, once the call is verified.
+ * @throws LlmError `IMAGE_TOOL_NOT_CALLED` when the model finished without calling it.
+ */
+export declare function validateRequiredImageTool(stream: AsyncIterable<StreamChunk>, required?: string): AsyncGenerator<StreamChunk>;
 /** Prefix for adapter-raised diagnostics. */
-export declare const PKG = "llm-newapi";
+export declare const PKG = "llm-newapi-vision";
 /**
  * Default case-insensitive id substrings excluding non-chat models from
  * discovery. NewAPI gateways aggregate every enabled channel into
@@ -46,7 +59,15 @@ export interface NewApiCatalogModel {
      * {@link reasoningEfforts}. Absence defaults to the highest declared rung.
      */
     defaultReasoningEffort?: string;
+    /**
+     * Whether this exact gateway route accepts `image_url` parts. Enable only
+     * after testing the route: the capability makes the host keep image blocks
+     * for this route instead of substituting deterministic text for them.
+     */
+    supportsImageInput?: boolean;
 }
+/** Projection of tool-produced images for a Chat Completions vision request. */
+export type ToolImageMode = 'off' | 'user-followup';
 /**
  * Validated connection facts for one operation. The plugin's
  * `resolveAdapterOptions` is the one explicit resolve step producing this
@@ -66,6 +87,8 @@ export interface NewApiConnectionOptions {
     apiKeyRef: CredentialRef;
     /** Advisory models exposed to discovery consumers; requests remain unrestricted. */
     models: readonly NewApiCatalogModel[];
+    /** Explicit opt-in; only `user-followup` repeats tool images through the verified user-role image format. */
+    toolImageMode?: ToolImageMode;
     /**
      * Case-insensitive id substrings excluding discovered models that cannot
      * serve chat completions; the hand-curated {@link models} catalog is never
@@ -91,6 +114,8 @@ export interface NewApiConnectionOptions {
 }
 /** Constructor options for {@link NewApiAdapter}: the operation-local resolution hooks the plugin owns. */
 export interface NewApiAdapterOptions {
+    /** Resolve the currently mounted attachment service only when images are requested. */
+    resolveAttachments?: () => AttachmentStore | undefined;
     /** Current validated connection facts; called once per operation. */
     options: () => NewApiConnectionOptions;
     /**

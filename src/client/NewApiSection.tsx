@@ -156,12 +156,12 @@ export interface NewApiSectionInjected {
 /** Full component props assembled by the settings slot renderer (locale seat + inject face). */
 export type NewApiSectionProps =
   PropsRuntime<'settings.section'>
-  & PropsLocale<'settings.newapi'>
+  & PropsLocale<'settings.newapiVision'>
   & InjectFace<NewApiSectionInjected>
 
-const NS = 'llm-newapi'
+const NS = 'llm-newapi-vision'
 /** Credential reference the host half resolves per request (see apply.ts). */
-const KEY_REF = 'newapi'
+const KEY_REF = 'newapi_images'
 
 /** The proxy text box's default and placeholder (mirrors the host default). */
 const DEFAULT_PROXY_URL = 'http://127.0.0.1:7890'
@@ -222,6 +222,8 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [candidates, setCandidates] = useState<readonly LlmDiscoveredModel[] | undefined>(undefined)
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  /** Tool-image review draft; persisted with the section as `toolImageMode`. */
+  const [toolImageReview, setToolImageReview] = useState(false)
   /** Proxy draft for the models.dev download; persisted with the section. */
   const [proxyEnabled, setProxyEnabled] = useState(false)
   const [proxyUrl, setProxyUrl] = useState<string>(DEFAULT_PROXY_URL)
@@ -260,6 +262,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
       setRevision(section.revision)
       setBaseURL(typeof value.baseURL === 'string' ? value.baseURL : '')
       setModels(toDrafts(value.models))
+      setToolImageReview(value.toolImageMode === 'user-followup')
       const proxy = (value.proxy ?? {}) as { enabled?: unknown; url?: unknown }
       setProxyEnabled(proxy.enabled === true)
       if (typeof proxy.url === 'string' && proxy.url.length > 0) setProxyUrl(proxy.url)
@@ -323,6 +326,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
       const ops: SettingsPathOpView[] = []
       if (trimmedBase.length > 0) ops.push({ op: 'set', path: ['baseURL'], value: trimmedBase })
       else ops.push({ op: 'unset', path: ['baseURL'] })
+      ops.push({ op: 'set', path: ['toolImageMode'], value: toolImageReview ? 'user-followup' : 'off' })
       ops.push({
         op: 'set',
         path: ['proxy'],
@@ -348,6 +352,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
             ...name.length > 0 ? { name } : {},
             ...contextWindow !== undefined ? { contextWindow } : {},
             ...maxTokens !== undefined ? { maxTokens } : {},
+            ...model.supportsImageInput === true ? { supportsImageInput: true } : {},
             ...efforts.length > 0 ? { reasoningEfforts: efforts } : {},
             ...preset !== undefined ? { defaultReasoningEffort: preset } : {},
           }
@@ -383,7 +388,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
     try {
       const key = keyDraft.trim()
       const response = await api.discoverModels(NS, {
-        provider: 'newapi',
+        provider: 'newapi-images',
         ...baseURL.trim().length > 0 ? { baseURL: baseURL.trim() } : {},
         ...key.length > 0 ? { apiKey: key } : {},
       })
@@ -549,7 +554,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
   }
 
   /** Replace one row, dropping optional fields the edit emptied. */
-  const patch = (index: number, next: Record<string, string | number | undefined>): void => {
+  const patch = (index: number, next: Record<string, string | number | boolean | undefined>): void => {
     setModels(current => current.map((model, at) => {
       if (at !== index) return model
       const cleared = new Set(
@@ -693,6 +698,17 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
             : null}
         </div>
         <p className="newapi-hint">{t('proxyHint')}</p>
+        <div className="newapi-proxyrow">
+          <label>
+            <input
+              type="checkbox" checked={toolImageReview}
+              aria-label={t('toolImageReview')}
+              onChange={(event) => { setToolImageReview(event.target.checked) }}
+            />
+            {t('toolImageReview')}
+          </label>
+        </div>
+        <p className="newapi-hint">{t('toolImageReviewHint')}</p>
         {models.length === 0 ? <p className="newapi-empty">{t('modelsEmpty')}</p> : null}
         {models.map((model, index) => (
           <div key={index} className="newapi-entry">
@@ -747,6 +763,15 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
                       aria-label={`${t('maxTokens')} ${String(index + 1)}`}
                       onChange={(event) => { editCapacity(index, 'maxTokens', event.target.value) }}
                     />
+                  </label>
+                  <label className="newapi-modelfield">
+                    <span className="newapi-modelfield-label">{t('modelVision')}</span>
+                    <input
+                      type="checkbox" checked={model.supportsImageInput === true}
+                      aria-label={`${t('modelVision')} ${String(index + 1)}`}
+                      onChange={(event) => { patch(index, { supportsImageInput: event.target.checked }) }}
+                    />
+                    <span className="newapi-hint">{t('modelVisionHint')}</span>
                   </label>
                   {Array.isArray(model.reasoningEfforts) && model.reasoningEfforts.length > 0
                     ? (

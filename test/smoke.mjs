@@ -111,21 +111,21 @@ function stubModelsListing() {
 
   assert.deepEqual(
     ctx.llm.listProviders().map(provider => ({ id: provider.id, name: provider.name })),
-    [{ id: 'newapi', name: 'NewAPI' }],
+    [{ id: 'newapi-images', name: 'NewAPI Vision' }],
   )
 
   const directory = ctx.llm.listConfigurableProviders()
   assert.equal(directory.length, 1)
-  assert.equal(directory[0].provider, 'newapi')
-  assert.equal(directory[0].displayName, 'NewAPI')
-  assert.equal(directory[0].settingsNs, 'llm-newapi')
+  assert.equal(directory[0].provider, 'newapi-images')
+  assert.equal(directory[0].displayName, 'NewAPI Vision')
+  assert.equal(directory[0].settingsNs, 'llm-newapi-vision')
   assert.deepEqual(directory[0].settingsPath, [])
   assert.equal(directory[0].declared, true)
 
   const { asked, restore } = stubModelsListing()
   let discovered
   try {
-    discovered = await ctx.llm.discoverModels('llm-newapi', {
+    discovered = await ctx.llm.discoverModels('llm-newapi-vision', {
       baseURL: 'http://gw.local:3000/v1/',
       apiKey: 'smoke-key',
     })
@@ -154,21 +154,21 @@ function stubModelsListing() {
   await ctx.plugin(LlmRuntime)
   await mountPlugin(ctx)
   await assert.rejects(
-    ctx.llm.discoverModels('llm-newapi', { baseURL: 'http://gw.local:3000/v1' }),
+    ctx.llm.discoverModels('llm-newapi-vision', { baseURL: 'http://gw.local:3000/v1' }),
     (error) => error.code === 'MISSING_CREDENTIAL'
       && error.message.includes('NewAPI settings page')
       && !error.message.includes('export'),
   )
 
-  // With the service holding the fixed 'newapi' reference, discovery rides
+  // With the service holding the fixed 'newapi_images' reference, discovery rides
   // the stored value as the bearer token.
   const ctx2 = new Context()
   await ctx2.plugin(LlmRuntime)
-  await ctx2.plugin(FakeCredentials, { newapi: 'stored-key' })
+  await ctx2.plugin(FakeCredentials, { newapi_images: 'stored-key' })
   await mountPlugin(ctx2)
   const { asked, restore } = stubModelsListing()
   try {
-    const found = await ctx2.llm.discoverModels('llm-newapi', { provider: 'newapi' })
+    const found = await ctx2.llm.discoverModels('llm-newapi-vision', { provider: 'newapi-images' })
     assert.equal(found.length, 2)
   } finally {
     restore()
@@ -201,11 +201,11 @@ function stubModelsListing() {
   // rather than snapshotting them at apply time.
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(FakeCredentials, { newapi: 'block-c-key' })
+  await ctx.plugin(FakeCredentials, { newapi_images: 'block-c-key' })
   const fiber = await mountPlugin(ctx, { baseURL: 'http://first-gw:9000/v1' })
   const first = stubModelsListing()
   try {
-    await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
+    await ctx.llm.discoverModels('llm-newapi-vision', { provider: 'newapi-images' })
   } finally {
     first.restore()
   }
@@ -216,7 +216,7 @@ function stubModelsListing() {
   updateVolatile(fiber.config.baseURL, committed.value.baseURL)
   const second = stubModelsListing()
   try {
-    await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
+    await ctx.llm.discoverModels('llm-newapi-vision', { provider: 'newapi-images' })
   } finally {
     second.restore()
   }
@@ -246,7 +246,7 @@ function stubModelsListing() {
   assert.equal(settings.policies.length, 1, 'exactly one presentation policy must be registered')
   assert.equal(settings.policies[0].presentation.auto, false,
     'the plugin ships its own page, so schema-generated pages must be off')
-  assert.equal(settings.policies[0].owner.name, 'llm-newapi',
+  assert.equal(settings.policies[0].owner.name, 'llm-newapi-vision',
     'the policy must name the plugin fiber it belongs to')
 }
 
@@ -254,7 +254,7 @@ function stubModelsListing() {
 {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(FakeCredentials, { newapi: 'key-d' })
+  await ctx.plugin(FakeCredentials, { newapi_images: 'key-d' })
   await mountPlugin(ctx)
 
   // Discovery sorts by id and derives routed display names from the last path segment.
@@ -269,7 +269,7 @@ function stubModelsListing() {
   }), { status: 200, headers: { 'content-type': 'application/json' } })
   let discovered
   try {
-    discovered = await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
+    discovered = await ctx.llm.discoverModels('llm-newapi-vision', { provider: 'newapi-images' })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -337,7 +337,7 @@ function stubModelsListing() {
   const resolveModelAdapter = new plugin.NewApiAdapter({
     options: () => ({
       baseURL: 'http://gw.local:3000/v1',
-      apiKeyRef: 'newapi',
+      apiKeyRef: 'newapi_images',
       models: [{ id: 'qwen3-32b', reasoningEfforts: ['low', 'high'] }],
       modelExcludePatterns: [],
       defaultContextWindow: 128_000,
@@ -346,14 +346,14 @@ function stubModelsListing() {
     }),
     resolveApiKey: async () => 'smoke-key',
   })
-  const resolved = await resolveModelAdapter.resolveModel('newapi', 'qwen3-32b')
+  const resolved = await resolveModelAdapter.resolveModel('newapi-images', 'qwen3-32b')
   assert.deepEqual(resolved.reasoning?.efforts.map(effort => effort.id), ['low', 'high'])
   // No preset → the highest declared rung becomes the default.
   assert.equal(resolved.reasoning?.defaultEffort, 'high')
   const presetAdapter = new plugin.NewApiAdapter({
     options: () => ({
       baseURL: 'http://gw.local:3000/v1',
-      apiKeyRef: 'newapi',
+      apiKeyRef: 'newapi_images',
       models: [{ id: 'm1', reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' }],
       modelExcludePatterns: [],
       defaultContextWindow: 128_000,
@@ -363,10 +363,50 @@ function stubModelsListing() {
     resolveApiKey: async () => 'smoke-key',
   })
   // A preset inside the declared list wins over the highest rung.
-  assert.equal((await presetAdapter.resolveModel('newapi', 'm1')).reasoning?.defaultEffort, 'low')
+  assert.equal((await presetAdapter.resolveModel('newapi-images', 'm1')).reasoning?.defaultEffort, 'low')
   const wired = plugin.serializeRequest({ model: 'qwen3-32b', messages: [], system: undefined, tools: undefined, reasoningEffort: 'high' })
   assert.equal(wired.reasoning_effort, 'high')
   assert.equal('reasoning_effort' in plugin.serializeRequest({ model: 'qwen3-32b', messages: [] }), false)
+
+  // The vision capability is what makes the host keep image blocks for this
+  // route instead of substituting text placeholders: a row without the flag
+  // must declare text only, a row with it must declare the image modality, and
+  // an uncatalogued id must keep declaring the negative capability.
+  const visionAdapter = new plugin.NewApiAdapter({
+    options: () => ({
+      baseURL: 'http://gw.local:3000/v1',
+      apiKeyRef: 'newapi_images',
+      models: [
+        { id: 'gpt-vision', supportsImageInput: true },
+        { id: 'text-only' },
+      ],
+      modelExcludePatterns: [],
+      defaultContextWindow: 128_000,
+      streamIdleTimeoutMs: 300_000,
+      retryPolicy: resolveRetryPolicy(undefined, 'smoke'),
+    }),
+    resolveApiKey: async () => 'smoke-key',
+  })
+  assert.deepEqual((await visionAdapter.resolveModel('newapi-images', 'gpt-vision')).inputModalities, ['text', 'image'])
+  assert.deepEqual((await visionAdapter.resolveModel('newapi-images', 'text-only')).inputModalities, ['text'])
+  assert.deepEqual((await visionAdapter.resolveModel('newapi-images', 'unlisted')).inputModalities, ['text'])
+  assert.deepEqual(
+    (await visionAdapter.listModels('newapi-images')).map(model => [model.id, model.inputModalities]),
+    [['gpt-vision', ['text', 'image']], ['text-only', ['text']]],
+  )
+
+  // A message carrying an image and no prepared version must fail loudly rather
+  // than silently send text where the caller attached a picture.
+  await assert.rejects(
+    async () => plugin.serializeRequestWithImages({
+      model: 'text-only',
+      messages: [{
+        id: 'u1', role: 'user', source: { kind: 'user' },
+        content: [{ type: 'image', attachment: { attachmentId: 'sha256:x', mediaType: 'image/png', bytes: 4, width: 2, height: 2 } }],
+      }],
+    }, { supportsImageInput: false }),
+    /requires a configured vision model and attachment service/u,
+  )
 }
 
 // ── Block E: the models-dev RPC channel registers once connection starts ──
@@ -385,7 +425,7 @@ function stubModelsListing() {
   // exposure is the connection service's own fence on the 0.1.7 line:
   // channel registration no longer carries a per-handle authority option.
   assert.equal(registered.length, 1)
-  assert.equal(registered[0].channel, '/llm-newapi')
+  assert.equal(registered[0].channel, '/llm-newapi-vision')
 
   // Unknown endpoints answer the error envelope without any network use.
   const answer = await registered[0].handler('nope', {}, new AbortController().signal)
@@ -415,14 +455,14 @@ function stubModelsListing() {
 {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(FakeCredentials, { newapi: 'key-h' })
+  await ctx.plugin(FakeCredentials, { newapi_images: 'key-h' })
   // A built-in-style route that officially serves gwmax-1 — a bare id under
   // no built-in family prefix, so the registry channel (not the hint list)
   // is what can flag it.
   const officialAdapter = new plugin.NewApiAdapter({
     options: () => ({
       baseURL: 'http://official.local/v1',
-      apiKeyRef: 'newapi',
+      apiKeyRef: 'newapi_images',
       models: [{ id: 'gwmax-1' }],
       modelExcludePatterns: [],
       defaultContextWindow: 128_000,
@@ -465,7 +505,7 @@ function stubModelsListing() {
   const adapter = new plugin.NewApiAdapter({
     options: () => ({
       baseURL: 'http://gw.local:3000/v1',
-      apiKeyRef: 'newapi',
+      apiKeyRef: 'newapi_images',
       models: [],
       modelExcludePatterns: [],
       defaultContextWindow: 128_000,
@@ -498,7 +538,7 @@ function stubModelsListing() {
   const adapter = new plugin.NewApiAdapter({
     options: () => ({
       baseURL: 'http://gw.local:3000/v1',
-      apiKeyRef: 'newapi',
+      apiKeyRef: 'newapi_images',
       models: [],
       modelExcludePatterns: [],
       defaultContextWindow: 128_000,
@@ -573,4 +613,4 @@ function stubModelsListing() {
   }
 }
 
-console.log('smoke: llm-newapi registrations, chat-only discovery, credentials-service key, settings schema validation, volatile-edit propagation, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')
+console.log('smoke: llm-newapi-vision registrations, chat-only discovery, credentials-service key, settings schema validation, volatile-edit propagation, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')

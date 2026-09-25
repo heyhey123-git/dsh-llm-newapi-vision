@@ -12,7 +12,7 @@ afterEach(cleanup)
 
 const t = (key: keyof typeof en): string => en[key]
 
-/** A wire face answering one resolved llm-newapi section (dsh 0.1.7-rc.1 Remote envelopes). */
+/** A wire face answering one resolved llm-newapi-vision section (dsh 0.1.7-rc.1 Remote envelopes). */
 function wireFace(overrides: Partial<{
   describeAnswer: unknown
   credentialsAnswer: unknown
@@ -24,7 +24,7 @@ function wireFace(overrides: Partial<{
         writable: true,
         hasDocument: true,
         namespaces: [{
-          ns: 'llm-newapi',
+          ns: 'llm-newapi-vision',
           schema: {},
           value: { baseURL: 'http://gw.local:3000/v1', models: [{ id: 'deepseek-chat', contextWindow: 65536 }] },
           applies: 'live',
@@ -35,11 +35,11 @@ function wireFace(overrides: Partial<{
     })),
     mutateSettings: vi.fn(() => Promise.resolve({
       ok: true,
-      value: { ns: 'llm-newapi', schema: {}, value: {}, applies: 'live', secrets: [], revision: 8 },
+      value: { ns: 'llm-newapi-vision', schema: {}, value: {}, applies: 'live', secrets: [], revision: 8 },
     })),
     describeCredentials: vi.fn(() => Promise.resolve({
       ok: true,
-      value: overrides.credentialsAnswer ?? { newapi: { configured: true, writable: true } },
+      value: overrides.credentialsAnswer ?? { newapi_images: { configured: true, writable: true } },
     })),
     setCredential: vi.fn(() => Promise.resolve({ ok: true, value: undefined })),
     discoverModels: vi.fn(),
@@ -80,7 +80,7 @@ describe('NewApiSection mount', () => {
     expect(api.describeSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('names the missing namespace when the host has no llm-newapi section', async () => {
+  it('names the missing namespace when the host has no llm-newapi-vision section', async () => {
     const api = wireFace({ describeAnswer: { writable: true, hasDocument: true, namespaces: [] } })
     render(<NewApiSection api={api as never} t={t} />)
 
@@ -91,7 +91,7 @@ describe('NewApiSection mount', () => {
 
 describe('environment-supplied credential (read-only)', () => {
   const envCredential = {
-    newapi: { configured: true, writable: false, source: 'env' },
+    newapi_images: { configured: true, writable: false, source: 'env' },
   }
 
   it('locks the key field with the launch-environment placeholder', async () => {
@@ -126,7 +126,7 @@ describe('models.dev params update', () => {
         writable: true,
         hasDocument: true,
         namespaces: [{
-          ns: 'llm-newapi',
+          ns: 'llm-newapi-vision',
           schema: {},
           value: {
             baseURL: 'http://gw.local:3000/v1',
